@@ -9,7 +9,7 @@ sidebar_label: Introduction
 This manual is designed to comprehensively walk through every aspect of setting up and using OpenRefine, including every interface function and feature.
 
 <!--
-This documentation platform provides a separate version of the user manual for each version of OpenRefine (from 3.4.1 onwards) - if you're looking for a later version than 3.4.1, please select the correct version from the dropdown menu in the top bar of this page.
+This documentation platform provides a separate user manual for each version of OpenRefine (from 3.4.1 onwards). If you're looking for a version later than 3.4.1, please select the correct version from the dropdown menu in the top bar of this page.
 -->
 
 This user manual starts with instructions for [installing or upgrading OpenRefine on Windows, Mac, and Linux computers](manual/installing.md). It then walks you through [the interface and how to run OpenRefine](manual/running.md#jvm-preferences) from a program or command line, with or without setting custom preferences and modifications.
