@@ -32,15 +32,24 @@ crontab -e
 
 3. Save and exit. Done! ✅
 
-### 🪟 Windows - Task Scheduler Setup
+### 🪟 Windows - Automatic Setup (Easy!)
+
+1. Find `services/setup-windows-task.ps1` in your project folder
+2. **Right-click** → **Run with PowerShell**
+3. Click "Yes" when prompted
+4. Done! ✅
+
+**That's it!** The PowerShell script does everything automatically.
+
+### 🪟 Windows - Manual Setup (if PowerShell doesn't work)
 
 1. Open Task Scheduler
-2. Create Basic Task → Name it "Daily Saint Reminder"
-3. Trigger: Daily → Start 6:00 AM
+2. Click "Create Basic Task" → Name: "Daily Saint Reminder"
+3. Trigger: Daily → Start at 6:00 AM
 4. Action: Start a program
    - Program: `C:\Program Files\nodejs\node.exe`
    - Arguments: `services\daily-saint-reminder.js`
-   - Start in: `C:\path\to\openrefine.org`
+   - Start in: `C:\path\to\openrefine.org` (full path)
 5. Click OK. Done! ✅
 
 ### 🐧 Linux - Systemd Timer (Recommended)
