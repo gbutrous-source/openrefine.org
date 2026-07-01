@@ -1,120 +1,105 @@
-# OpenRefine.org - Claude Development Guide
+# Daily Saint & Scientific Event Reminder
 
-## Active Routines
+**Simple Setup** - No email, just log to console at 6 AM daily
 
-### 📧 Daily Saint & Scientific Event Reminder Service
-**Status**: Active Setup  
-**Branch**: `claude/daily-saint-event-reminder-o8im2e`  
-**Purpose**: Send daily emails at 6 AM with today's saint feast day and scientific event
+## What It Does
+Runs every day at 6 AM and displays:
+```
+📅 DAILY REMINDER - Wednesday, July 1, 2026
 
-#### What It Does
-- Runs every day at 6 AM
-- Fetches today's Catholic saint feast day
-- Gets a notable scientific/historical event from Wikipedia
-- Sends HTML-formatted email to `gbutrous@gmail.com`
-- Logs all activities to `services/logs/reminder.log`
+⛪ TODAY'S SAINT FEAST DAY:
+   Saint Peter
 
-#### Setup Checklist
-- [x] Service code created: `services/daily-saint-reminder.js`
-- [x] Configuration template: `.env.example`
-- [x] Documentation: `services/README.md`
-- [x] Logging system with viewer
-- [ ] **TODO**: Create `.env` with Gmail app password
-- [ ] **TODO**: Set up cron job (see instructions below)
-- [ ] **TODO**: Test with `npm run reminder:test`
+🔬 SCIENTIFIC EVENT OF THE DAY:
+   1858: Comet 2P/Encke is discovered
+```
 
-#### Quick Commands
+Results are logged to: `services/logs/reminder.log`
+
+## Setup (Choose Your System)
+
+### 🐧 Linux/Mac - Crontab Setup
+
+1. Open crontab:
 ```bash
-# Test the service immediately
-npm run reminder:test
+crontab -e
+```
 
-# View recent logs
+2. Add this line (6 AM daily):
+```
+0 6 * * * cd /home/user/openrefine.org && node services/daily-saint-reminder.js
+```
+
+3. Save and exit. Done! ✅
+
+### 🪟 Windows - Task Scheduler Setup
+
+1. Open Task Scheduler
+2. Create Basic Task → Name it "Daily Saint Reminder"
+3. Trigger: Daily → Start 6:00 AM
+4. Action: Start a program
+   - Program: `C:\Program Files\nodejs\node.exe`
+   - Arguments: `services\daily-saint-reminder.js`
+   - Start in: `C:\path\to\openrefine.org`
+5. Click OK. Done! ✅
+
+### 🐧 Linux - Systemd Timer (Recommended)
+
+Create `/etc/systemd/system/saint-reminder.service`:
+```ini
+[Unit]
+Description=Daily Saint and Scientific Event Reminder
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=your-username
+WorkingDirectory=/home/user/openrefine.org
+ExecStart=/usr/bin/node /home/user/openrefine.org/services/daily-saint-reminder.js
+StandardOutput=journal
+StandardError=journal
+```
+
+Create `/etc/systemd/system/saint-reminder.timer`:
+```ini
+[Unit]
+Description=Daily Saint and Scientific Event Reminder Timer
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable:
+```bash
+sudo systemctl enable saint-reminder.timer
+sudo systemctl start saint-reminder.timer
+```
+
+## Test It Now
+
+```bash
+node services/daily-saint-reminder.js
+```
+
+Output appears in console AND saved to `services/logs/reminder.log`
+
+## View Logs
+
+```bash
 npm run reminder:logs
+```
 
-# Check logs file directly
+Or view directly:
+```bash
 tail -f services/logs/reminder.log
 ```
 
-#### Setup Instructions
+## That's It! 
 
-**1. Environment Configuration**
-```bash
-cp .env.example .env
-```
+No passwords, no email setup, no complicated stuff. Just one cron command at 6 AM.
 
-Edit `.env` with your Gmail credentials:
-```
-EMAIL_USER=gbutrous@gmail.com
-EMAIL_PASSWORD=your-16-char-app-password
-RECIPIENT_EMAIL=gbutrous@gmail.com
-```
-
-Get Gmail app password:
-1. Visit https://myaccount.google.com/apppasswords
-2. Select "Mail" and "Windows Computer"
-3. Generate password (16 characters)
-4. Copy to `.env` file
-
-**2. Cron Job Setup**
-
-**Linux/Mac - crontab:**
-```bash
-crontab -e
-# Add: 0 6 * * * cd /home/user/openrefine.org && node services/daily-saint-reminder.js >> /var/log/saint-reminder.log 2>&1
-```
-
-**Linux - systemd (Recommended):**
-See `services/README.md` for full systemd timer setup
-
-**Windows - Task Scheduler:**
-- Create new task
-- Trigger: Daily at 6:00 AM
-- Action: Run `node` with arguments `C:\path\to\services\daily-saint-reminder.js`
-- Working directory: `C:\path\to\openrefine.org`
-
-**3. Test**
-```bash
-npm run reminder:test  # Should send email immediately
-npm run reminder:logs  # View logs with colors
-```
-
-#### Files
-- `services/daily-saint-reminder.js` - Main service
-- `services/view-logs.js` - Log viewer
-- `services/logs/reminder.log` - Log file (auto-created)
-- `services/README.md` - Full documentation
-- `.env.example` - Configuration template
-- `.env` - (create this) Actual credentials
-
-#### Data Sources
-- **Saints**: Catholic News Agency API
-- **Scientific Events**: Wikipedia "On This Day" API
-- **Email**: Gmail SMTP
-
-#### Monitoring
-- Check logs: `npm run reminder:logs`
-- Check email inbox: `gbutrous@gmail.com`
-- Manual test: `npm run reminder:test`
-
-#### Troubleshooting
-- **Email not sending**: Verify Gmail app password is 16 chars and correct
-- **API errors**: Check internet connection or API availability
-- **Cron not running**: Verify path is correct and node is in PATH
-- **Logs not appearing**: Ensure `services/logs/` directory exists or runs first time
-
----
-
-## Project Info
-- **Project**: OpenRefine Documentation (Docusaurus)
-- **Node**: >=18.0
-- **Package Manager**: npm@9.6.7
-- **Tech**: Docusaurus 3.9.2
-
-## Useful Scripts
-```bash
-npm start          # Start dev server
-npm build          # Build docs
-npm run reminder:send   # Send reminder email
-npm run reminder:test   # Test reminder
-npm run reminder:logs   # View recent logs
-```
+**Check your chat logs daily** at 6 AM to see today's saint and scientific event! 📖

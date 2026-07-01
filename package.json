@@ -11,8 +11,7 @@
     "swizzle": "docusaurus swizzle",
     "serve": "docusaurus serve",
     "deploy": "docusaurus deploy",
-    "reminder:send": "node services/daily-saint-reminder.js",
-    "reminder:test": "node services/daily-saint-reminder.js",
+    "reminder": "node services/daily-saint-reminder.js",
     "reminder:logs": "node services/view-logs.js"
   },
   "dependencies": {

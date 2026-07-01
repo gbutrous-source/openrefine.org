@@ -29,9 +29,5 @@ Desktop.ini
 # Mac crap
 .DS_Store
 
-# Environment variables (sensitive)
-.env
-.env.local
-
-# Service logs
+# Service logs (auto-generated)
 services/logs/
