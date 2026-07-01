@@ -28,3 +28,10 @@ Desktop.ini
 
 # Mac crap
 .DS_Store
+
+# Environment variables (sensitive)
+.env
+.env.local
+
+# Service logs
+services/logs/
