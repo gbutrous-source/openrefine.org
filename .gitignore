@@ -28,3 +28,6 @@ Desktop.ini
 
 # Mac crap
 .DS_Store
+
+# Service logs (auto-generated)
+services/logs/
