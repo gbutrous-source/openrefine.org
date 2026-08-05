@@ -126,6 +126,9 @@ Links:
 Note_Summary: ${yamlQuote(opts.noteSummary)}
 ---
 
+# ${opts.title}
+
+${opts.noteSummary}
 `;
 }
 
