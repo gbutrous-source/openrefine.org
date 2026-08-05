@@ -1,0 +1,10 @@
+{
+	"id": "glossary-refraction",
+	"name": "Glossary Refraction",
+	"version": "1.0.0",
+	"minAppVersion": "1.4.0",
+	"description": "Turns H2/H3 headings in a document (or a highlighted selection) into individual glossary notes, filed in a Glossary folder with a structured frontmatter template.",
+	"author": "Lina Stores",
+	"authorUrl": "https://www.linastores.co.uk/",
+	"isDesktopOnly": false
+}
