@@ -15,21 +15,14 @@ note, with the source file and creation date for each paragraph.
 
 ## Paragraph definition
 
-A paragraph is either:
-
-- **A block of text**: any contiguous run of non-blank lines, bounded by a
-  blank line or the start/end of the file.
-- **A list item**: any line starting with `-` (optionally indented) is
-  *also* treated as its own paragraph, independent of the block it sits in.
-  This means a single hashtag on one bullet in a long list is captured on
-  its own, without pulling in the whole list.
-
-Within a block, every list item is always split out as its own paragraph —
-consecutive task/list lines are never glued together into one entry, even
-when they sit directly under a heading or each other with no blank line in
-between. Any run of plain (non-list) lines around or between list items is
-still kept together as its own paragraph, so ordinary prose paragraphs are
-unaffected.
+Every non-blank line in a file is its own paragraph — `-` list items,
+numbered items, and plain one-line entries alike, whether or not blank
+lines separate them from their neighbors. This matches an Aegis-style
+daily-note workflow where each line is one atomic, taggable thought (e.g.
+a stack of `04_27 - [] --- ... #event` lines with no blank lines between
+them still compiles as separate entries, one per line), and a heading line
+above such a stack is simply its own non-matching paragraph and drops out
+of the output on its own.
 
 ## Hashtag matching
 

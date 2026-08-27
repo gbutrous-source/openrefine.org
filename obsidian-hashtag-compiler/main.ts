@@ -16,8 +16,6 @@ interface MatchEntry {
 	created: string;
 }
 
-const LIST_ITEM_RE = /^\s*-\s+/;
-
 function escapeRegExp(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -31,49 +29,18 @@ function formatDate(ms: number): string {
 }
 
 /**
- * Splits file content into contiguous non-blank-line blocks, then splits
- * each block into paragraphs: every `-` list item is always its own
- * paragraph, and runs of plain (non-list) lines between/around list items
- * are kept together as their own paragraph. This keeps consecutive task
- * lines that aren't blank-line-separated (e.g. under a shared heading, or
- * back-to-back list items) from being glued into one combined entry.
+ * Every non-blank line is treated as its own paragraph: `-` list items,
+ * numbered items, and plain one-line entries alike, whether or not blank
+ * lines separate them from their neighbors. Aegis-style notes put one
+ * atomic, taggable thought per line, so lines are never glued together
+ * into a combined multi-line entry.
  */
 function extractParagraphs(content: string): string[] {
-	const lines = content.replace(/\r\n/g, "\n").split("\n");
-	const blocks: string[][] = [];
-	let current: string[] = [];
-	for (const line of lines) {
-		if (line.trim() === "") {
-			if (current.length) {
-				blocks.push(current);
-				current = [];
-			}
-		} else {
-			current.push(line);
-		}
-	}
-	if (current.length) blocks.push(current);
-
-	const paragraphs: string[] = [];
-	for (const block of blocks) {
-		let proseRun: string[] = [];
-		const flushProseRun = () => {
-			if (proseRun.length) {
-				paragraphs.push(proseRun.join("\n"));
-				proseRun = [];
-			}
-		};
-		for (const line of block) {
-			if (LIST_ITEM_RE.test(line)) {
-				flushProseRun();
-				paragraphs.push(line.trim());
-			} else {
-				proseRun.push(line);
-			}
-		}
-		flushProseRun();
-	}
-	return paragraphs;
+	return content
+		.replace(/\r\n/g, "\n")
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0);
 }
 
 function sleep(ms: number): Promise<void> {
