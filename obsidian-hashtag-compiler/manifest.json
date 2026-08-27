@@ -1,0 +1,10 @@
+{
+	"id": "hashtag-paragraph-compiler",
+	"name": "Hashtag Paragraph Compiler",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Scans your vault for paragraphs containing a given hashtag and compiles them into a single note, with source file and creation date for each.",
+	"author": "g.butrous",
+	"authorUrl": "",
+	"isDesktopOnly": false
+}
