@@ -24,12 +24,12 @@ A paragraph is either:
   This means a single hashtag on one bullet in a long list is captured on
   its own, without pulling in the whole list.
 
-To avoid emitting the same content twice, a block that consists **entirely**
-of list items is represented only by its individual list-item paragraphs
-(not also as one big combined block). A block that mixes plain text and list
-items is represented both as a whole block *and* as separate list-item
-paragraphs, matching the spec's "each list item as its own paragraph as well
-(even if part of a larger list)".
+Within a block, every list item is always split out as its own paragraph —
+consecutive task/list lines are never glued together into one entry, even
+when they sit directly under a heading or each other with no blank line in
+between. Any run of plain (non-list) lines around or between list items is
+still kept together as its own paragraph, so ordinary prose paragraphs are
+unaffected.
 
 ## Hashtag matching
 
@@ -48,7 +48,7 @@ paragraphs, matching the spec's "each list item as its own paragraph as well
   ```
   <paragraph text as-is>
 
-  Source: folder/file.md • Created: 2024-03-17
+  Source: [[folder/file.md]] • Created: 2024-03-17
   ```
 
   with a blank line separating entries.

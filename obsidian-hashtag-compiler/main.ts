@@ -31,10 +31,12 @@ function formatDate(ms: number): string {
 }
 
 /**
- * Splits file content into contiguous non-blank-line blocks, then also
- * pulls out each `-` list item within a block as its own paragraph.
- * A block made up entirely of list items is represented only by its
- * individual items (not duplicated as a whole-block paragraph too).
+ * Splits file content into contiguous non-blank-line blocks, then splits
+ * each block into paragraphs: every `-` list item is always its own
+ * paragraph, and runs of plain (non-list) lines between/around list items
+ * are kept together as their own paragraph. This keeps consecutive task
+ * lines that aren't blank-line-separated (e.g. under a shared heading, or
+ * back-to-back list items) from being glued into one combined entry.
  */
 function extractParagraphs(content: string): string[] {
 	const lines = content.replace(/\r\n/g, "\n").split("\n");
@@ -54,16 +56,22 @@ function extractParagraphs(content: string): string[] {
 
 	const paragraphs: string[] = [];
 	for (const block of blocks) {
-		const listLines = block.filter((l) => LIST_ITEM_RE.test(l));
-		const allList = listLines.length === block.length;
-		if (!allList) {
-			paragraphs.push(block.join("\n"));
-		}
+		let proseRun: string[] = [];
+		const flushProseRun = () => {
+			if (proseRun.length) {
+				paragraphs.push(proseRun.join("\n"));
+				proseRun = [];
+			}
+		};
 		for (const line of block) {
 			if (LIST_ITEM_RE.test(line)) {
+				flushProseRun();
 				paragraphs.push(line.trim());
+			} else {
+				proseRun.push(line);
 			}
 		}
+		flushProseRun();
 	}
 	return paragraphs;
 }
@@ -151,7 +159,7 @@ export default class HashtagCompilerPlugin extends Plugin {
 
 		const body = entries.length
 			? entries
-					.map((e) => `${e.text}\n\nSource: ${e.path} • Created: ${e.created}\n`)
+					.map((e) => `${e.text}\n\nSource: [[${e.path}]] • Created: ${e.created}\n`)
 					.join("\n")
 			: `_No paragraphs found containing #${tagText}._\n`;
 
