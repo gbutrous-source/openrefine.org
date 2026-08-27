@@ -47,7 +47,6 @@ unaffected.
 
   ```
   <paragraph text as-is>
-
   Source: [[folder/file.md]] • Created: 2024-03-17
   ```
 

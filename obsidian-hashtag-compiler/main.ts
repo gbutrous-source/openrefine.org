@@ -159,7 +159,7 @@ export default class HashtagCompilerPlugin extends Plugin {
 
 		const body = entries.length
 			? entries
-					.map((e) => `${e.text}\n\nSource: [[${e.path}]] • Created: ${e.created}\n`)
+					.map((e) => `${e.text}\nSource: [[${e.path}]] • Created: ${e.created}\n`)
 					.join("\n")
 			: `_No paragraphs found containing #${tagText}._\n`;
 
