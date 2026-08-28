@@ -182,19 +182,24 @@ export default class AtomicNotesPlugin extends Plugin {
 		return name.replace(ILLEGAL_FILENAME_CHARS, "").trim();
 	}
 
-	/** Wraps the title in quotes when needed so it stays valid YAML. */
-	yamlSafeTitle(title: string): string {
-		if (/[:#{}\[\],&*!|>'"%@`]/.test(title) || /^\s|\s$/.test(title)) {
-			return `"${title.replace(/"/g, '\\"')}"`;
+	/** Wraps a YAML frontmatter value in quotes when needed so it stays
+	 * valid YAML. Wikilinks (which start with "[[") must always be quoted:
+	 * unquoted, the leading "[" is YAML flow-sequence syntax, so
+	 * "Links: [[Note]]" silently parses as a nested array instead of the
+	 * literal string "[[Note]]" - and Obsidian can no longer recognize or
+	 * render it as a link. */
+	yamlSafeValue(value: string): string {
+		if (/^\[\[/.test(value) || /[:#{}\[\],&*!|>'"%@`]/.test(value) || /^\s|\s$/.test(value)) {
+			return `"${value.replace(/"/g, '\\"')}"`;
 		}
-		return title;
+		return value;
 	}
 
 	applyTemplate(title: string, content: string, link: string): string {
 		return this.settings.template
-			.replace(/{{\s*title\s*}}/g, this.yamlSafeTitle(title))
+			.replace(/{{\s*title\s*}}/g, this.yamlSafeValue(title))
 			.replace(/{{\s*content\s*}}/g, content)
-			.replace(/{{\s*link\s*}}/g, link)
+			.replace(/{{\s*link\s*}}/g, this.yamlSafeValue(link))
 			.replace(/{{\s*date\s*}}/g, this.formatTimestamp());
 	}
 

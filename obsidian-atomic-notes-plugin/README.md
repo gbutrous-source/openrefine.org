@@ -61,8 +61,13 @@ heading-indent: True
 ------
 ```
 
-`{{link}}` becomes a wikilink back to the source note (`[[Source note name]]`),
-so you always know where the atomic note came from. The template is fully
+`{{link}}` becomes a wikilink back to the source note, stored as
+`Links: "[[Source note name]]"`. It's always wrapped in quotes: an
+unquoted `[[...]]` right after `Key:` is YAML flow-sequence syntax (a
+nested list), so Obsidian would silently parse it as an array instead of
+a link and it would show up as inert, unclickable text. Quoting keeps it
+a single string, which Obsidian recognizes and renders as a real,
+clickable link. The template is fully
 editable from the plugin's settings tab, and supports these placeholders:
 
 | Placeholder   | Replaced with                                   |
