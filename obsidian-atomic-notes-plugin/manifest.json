@@ -1,0 +1,9 @@
+{
+	"id": "atomic-notes-from-selection",
+	"name": "Atomic Notes from Selection",
+	"version": "1.0.0",
+	"minAppVersion": "1.0.0",
+	"description": "Create an atomic note from the current selection or the paragraph around the cursor, opened in a right-hand split and filled in from a customizable template. The source note is never modified.",
+	"author": "",
+	"isDesktopOnly": false
+}

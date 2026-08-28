@@ -1,0 +1,26 @@
+{
+	"name": "atomic-notes-from-selection",
+	"version": "1.0.0",
+	"description": "Obsidian plugin that creates an atomic note from a selection or the surrounding paragraph, opened in a right-hand split.",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+	},
+	"keywords": [
+		"obsidian",
+		"obsidian-plugin",
+		"atomic-notes",
+		"zettelkasten"
+	],
+	"author": "",
+	"license": "MIT",
+	"devDependencies": {
+		"@types/node": "^20.11.5",
+		"builtin-modules": "3.3.0",
+		"esbuild": "0.19.11",
+		"obsidian": "latest",
+		"tslib": "2.4.0",
+		"typescript": "5.3.3"
+	}
+}
