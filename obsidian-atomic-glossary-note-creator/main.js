@@ -1,7 +1,8 @@
 const { Plugin, Notice, Modal, PluginSettingTab, Setting, stringifyYaml, requestUrl } = require('obsidian');
 
 const DEFAULT_SETTINGS = {
-	geminiApiKey: ''
+	geminiApiKey: '',
+	showAiStatus: true
 };
 
 const DESTINATIONS = {
@@ -65,6 +66,12 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			editorCallback: (editor, view) => this.run(editor, view, 'glossary')
 		});
 
+		this.addCommand({
+			id: 'test-gemini-connection',
+			name: 'Test Gemini connection',
+			callback: () => this.testGemini()
+		});
+
 		this.addSettingTab(new AtomicGlossarySettingTab(this.app, this));
 	}
 
@@ -105,7 +112,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			return;
 		}
 
-		const aiResults = await this.getAiSuggestions(blocks);
+		const { results: aiResults, report: aiReport } = await this.getAiSuggestions(blocks);
 		this.assignTitles(blocks, aiResults, runStarted);
 
 		await this.ensureFolder(destination.folder);
@@ -122,7 +129,9 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			}
 		}
 
-		new Notice(`Atomic notes: created ${createdCount} note(s) in "${destination.folder}".`);
+		let summary = `Atomic notes: created ${createdCount} note(s) in "${destination.folder}".`;
+		if (this.settings.showAiStatus) summary += `\n${this.describeAiReport(aiReport)}`;
+		new Notice(summary, this.settings.showAiStatus ? 10000 : undefined);
 	}
 
 	chooseDestination(defaultKey) {
@@ -501,42 +510,72 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 	}
 
 	/**
-	 * Tier 2. Returns one { title, links } entry per block, or null where
-	 * Gemini is unavailable or failed. Never throws: any failure simply
+	 * Tier 2. Returns { results, report }: one { title, links } entry per
+	 * block (null where Gemini was unavailable or failed), plus a report of
+	 * what happened for the diagnostics notice. Never throws: any failure
 	 * leaves the rule-based (Tier 1) behaviour in place.
 	 */
 	async getAiSuggestions(blocks) {
 		const empty = blocks.map(() => null);
 		const apiKey = (this.settings.geminiApiKey || '').trim();
-		if (!apiKey) return empty;
+		if (!apiKey) return { results: empty, report: { state: 'off', reason: 'no API key in settings' } };
 
 		try {
-			if (!(await this.isOnline())) return empty;
-			return await this.mapWithConcurrency(blocks, GEMINI_CONCURRENCY, (block) =>
-				this.askGemini(block, apiKey).catch(() => null)
+			const online = await this.checkOnline();
+			if (!online.ok) return { results: empty, report: { state: 'offline', reason: online.reason } };
+
+			const outcomes = await this.mapWithConcurrency(blocks, GEMINI_CONCURRENCY, (block) =>
+				this.askGemini(block.body, apiKey).catch((err) => ({ ok: false, reason: `unexpected error: ${err.message}` }))
 			);
+			outcomes.forEach((o, i) => {
+				if (!o.ok) console.warn(`Atomic notes: Gemini failed for block ${i + 1}: ${o.reason}`, o.detail || '');
+			});
+
+			const results = outcomes.map((o) => (o.ok ? o.result : null));
+			const succeeded = outcomes.filter((o) => o.ok).length;
+			const firstFailure = outcomes.find((o) => !o.ok);
+			return {
+				results,
+				report: {
+					state: succeeded === 0 ? 'failed' : 'used',
+					succeeded,
+					total: blocks.length,
+					reason: firstFailure ? firstFailure.reason : null
+				}
+			};
 		} catch (err) {
-			return empty;
+			return { results: empty, report: { state: 'failed', reason: `unexpected error: ${err.message}` } };
 		}
 	}
 
-	async isOnline() {
-		if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+	async checkOnline() {
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			return { ok: false, reason: 'the computer reports no network connection' };
+		}
 		try {
 			await this.withTimeout(
 				requestUrl({ url: 'https://generativelanguage.googleapis.com/', method: 'HEAD', throw: false }),
 				CONNECTIVITY_TIMEOUT_MS
 			);
-			return true;
+			return { ok: true };
 		} catch (err) {
-			return false;
+			const reason =
+				err.message === 'timeout'
+					? `Google's server did not answer within ${CONNECTIVITY_TIMEOUT_MS / 1000}s`
+					: `cannot reach Google's server (${err.message})`;
+			return { ok: false, reason };
 		}
 	}
 
-	async askGemini(block, apiKey) {
+	/**
+	 * Sends one block to Gemini. Resolves to { ok: true, result, ms } or
+	 * { ok: false, reason, detail, ms } where reason is a plain-language
+	 * explanation for the diagnostics.
+	 */
+	async askGemini(text, apiKey) {
 		const prompt = [
 			'You are helping build a Zettelkasten knowledge base in Obsidian.',
-			'Read the note text below and reply with JSON only, no prose and no code fences, in exactly this shape:',
+			'Read the note text below and reply with JSON only, in exactly this shape:',
 			'{"title": "<title>", "links": ["<term>", "<term>"]}',
 			'',
 			'Rules:',
@@ -545,36 +584,154 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			'',
 			'Note text:',
 			'"""',
-			block.body.slice(0, GEMINI_MAX_INPUT_CHARS),
+			text.slice(0, GEMINI_MAX_INPUT_CHARS),
 			'"""'
 		].join('\n');
 
-		const response = await this.withTimeout(
-			requestUrl({
-				url: `${GEMINI_ENDPOINT}?key=${encodeURIComponent(apiKey)}`,
-				method: 'POST',
-				contentType: 'application/json',
-				body: JSON.stringify({
-					contents: [{ parts: [{ text: prompt }] }],
-					generationConfig: { maxOutputTokens: 1024 }
+		const started = Date.now();
+		let response;
+		try {
+			response = await this.withTimeout(
+				requestUrl({
+					url: GEMINI_ENDPOINT,
+					method: 'POST',
+					contentType: 'application/json',
+					headers: { 'x-goog-api-key': apiKey },
+					body: JSON.stringify({
+						contents: [{ role: 'user', parts: [{ text: prompt }] }],
+						generationConfig: { responseMimeType: 'application/json' }
+					}),
+					throw: false
 				}),
-				throw: false
-			}),
-			GEMINI_TIMEOUT_MS
+				GEMINI_TIMEOUT_MS
+			);
+		} catch (err) {
+			const ms = Date.now() - started;
+			if (err.message === 'timeout') {
+				return { ok: false, ms, reason: `no reply within ${GEMINI_TIMEOUT_MS / 1000}s (timeout)` };
+			}
+			return { ok: false, ms, reason: `network error (${err.message})` };
+		}
+		const ms = Date.now() - started;
+
+		let data = null;
+		try {
+			data = JSON.parse(response.text);
+		} catch (err) {
+			// Leave data null; handled below.
+		}
+
+		if (response.status !== 200) {
+			const apiMessage = data && data.error && data.error.message ? data.error.message : (response.text || '').slice(0, 200);
+			return { ok: false, ms, reason: `${this.describeHttpStatus(response.status)} — Google says: ${apiMessage}`, detail: data };
+		}
+
+		const candidate = data && data.candidates && data.candidates[0];
+		if (!candidate) {
+			const blocked = data && data.promptFeedback && data.promptFeedback.blockReason;
+			return {
+				ok: false,
+				ms,
+				reason: blocked ? `Gemini refused the text (${blocked})` : 'Gemini returned no answer',
+				detail: data
+			};
+		}
+
+		// Skip "thought" parts some models return alongside the answer.
+		const parts = (candidate.content && candidate.content.parts) || [];
+		const raw = parts
+			.filter((p) => !p.thought)
+			.map((p) => p.text || '')
+			.join('');
+		if (!raw.trim()) {
+			return { ok: false, ms, reason: `Gemini returned an empty answer (finishReason: ${candidate.finishReason || 'unknown'})`, detail: data };
+		}
+
+		const result = this.parseGeminiReply(raw);
+		if (!result) {
+			return { ok: false, ms, reason: `Gemini's answer was not the expected JSON: ${raw.slice(0, 120)}`, detail: raw };
+		}
+		return { ok: true, ms, result };
+	}
+
+	describeHttpStatus(status) {
+		switch (status) {
+			case 400:
+				return 'HTTP 400: bad request or invalid API key';
+			case 401:
+			case 403:
+				return `HTTP ${status}: API key rejected or Gemini API not enabled for this key`;
+			case 404:
+				return 'HTTP 404: model not found (check the model name)';
+			case 429:
+				return 'HTTP 429: quota or rate limit exceeded';
+			default:
+				return status >= 500 ? `HTTP ${status}: Google server error` : `HTTP ${status}`;
+		}
+	}
+
+	/**
+	 * "Test Gemini connection" command and settings button. Runs every
+	 * step with a sample text and shows the result, whether it worked or not.
+	 */
+	async testGemini() {
+		const apiKey = (this.settings.geminiApiKey || '').trim();
+		const model = GEMINI_ENDPOINT.replace(/^.*\/models\/([^:]+):.*$/, '$1');
+		const lines = [`Gemini test (model: ${model})`];
+
+		if (!apiKey) {
+			lines.push('✗ API key: none saved in settings.');
+			return this.showDiagnostic(lines);
+		}
+		lines.push(`✓ API key: saved (${apiKey.length} characters, ends …${apiKey.slice(-4)}).`);
+
+		const online = await this.checkOnline();
+		if (!online.ok) {
+			lines.push(`✗ Connection: ${online.reason}.`);
+			return this.showDiagnostic(lines);
+		}
+		lines.push("✓ Connection: Google's server is reachable.");
+
+		const notice = new Notice('Gemini test: waiting for reply…', 0);
+		const outcome = await this.askGemini(
+			'Galen of Pergamon believed that blood was produced in the liver and consumed by the organs. William Harvey later showed that blood circulates.',
+			apiKey
 		);
+		notice.hide();
 
-		if (response.status !== 200) return null;
+		if (outcome.ok) {
+			lines.push(`✓ Reply in ${(outcome.ms / 1000).toFixed(1)}s.`);
+			lines.push(`Title: ${outcome.result.title || '(none)'}`);
+			lines.push(`Links: ${outcome.result.links.join(', ') || '(none)'}`);
+			if (outcome.ms > GEMINI_TIMEOUT_MS * 0.8) {
+				lines.push(`⚠ Close to the ${GEMINI_TIMEOUT_MS / 1000}s limit; longer notes may time out.`);
+			}
+		} else {
+			lines.push(`✗ Gemini: ${outcome.reason}`);
+			console.warn('Atomic notes: Gemini test failed', outcome);
+		}
+		this.showDiagnostic(lines);
+	}
 
-		const parts =
-			response.json &&
-			response.json.candidates &&
-			response.json.candidates[0] &&
-			response.json.candidates[0].content &&
-			response.json.candidates[0].content.parts;
-		if (!parts) return null;
+	showDiagnostic(lines) {
+		console.log(lines.join('\n'));
+		new Notice(lines.join('\n'), 20000);
+	}
 
-		const raw = parts.map((p) => p.text || '').join('');
-		return this.parseGeminiReply(raw);
+	/** One-line summary of what Gemini did in this run, shown after the run. */
+	describeAiReport(report) {
+		switch (report.state) {
+			case 'off':
+				return 'Gemini: not used (no API key in settings).';
+			case 'offline':
+				return `Gemini: not used (${report.reason}).`;
+			case 'failed':
+				return `Gemini: failed, offline rules used. Reason: ${report.reason}`;
+			default:
+				return report.succeeded === report.total
+					? `Gemini: used for all ${report.total} block(s).`
+					: `Gemini: used for ${report.succeeded} of ${report.total} block(s). Other blocks failed: ${report.reason}`;
+		}
 	}
 
 	parseGeminiReply(raw) {
@@ -717,5 +874,20 @@ class AtomicGlossarySettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
+
+		new Setting(containerEl)
+			.setName('Test Gemini connection')
+			.setDesc('Sends a short sample text to Gemini and shows each step: key, connection, and the reply or the exact error.')
+			.addButton((btn) => btn.setButtonText('Run test').onClick(() => this.plugin.testGemini()));
+
+		new Setting(containerEl)
+			.setName('Show Gemini status after each run')
+			.setDesc('Adds a line to the end-of-run notice saying whether Gemini was used, and why not if it was not.')
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.showAiStatus).onChange(async (value) => {
+					this.plugin.settings.showAiStatus = value;
+					await this.plugin.saveSettings();
+				})
+			);
 	}
 }
