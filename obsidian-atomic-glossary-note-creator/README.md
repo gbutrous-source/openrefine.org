@@ -4,24 +4,24 @@ Obsidian plugin that turns blocks of the active note into self-contained atomic 
 
 ## Install
 
-Copy `main.js` and `manifest.json` into `<vault>/.obsidian/plugins/atomic-glossary-note-creator/`, then enable the plugin under Settings → Community plugins.
+Copy `main.js` and `manifest.json` into `<vault>/.obsidian/plugins/atomic-glossary-note-creator/`, then restart Obsidian and enable the plugin under Settings → Community plugins.
 
 ## Use
 
-- Run **Create Atomic or Glossary Note** (assign it one hotkey). A dialog asks for **Atomic note** (`Atomic Notes/`) or **Glossary entry** (`Glossary/`). Press **A** or **G** to create at once; the last choice is remembered.
+- Run **Create Atomic or Glossary Note** (assign it one hotkey). A dialog offers **Create atomic note** (`Atomic Notes/`) or **Create glossary note** (`Glossary/`). Press **A** or **G** to create at once; the last choice is remembered.
 - A block starts at an `##`/`###` heading or at a line holding only `#newatomicnote`.
 - A block ends at `¤¤` alone on a line, the next `##`/`###`, the next `#newatomicnote`, or the end of the selection/document.
 - Select text to process only the selection; with no selection the whole note is processed.
-- Citations such as `[2]` or `[^1]` keep working: each new note gets the matching `[2]: https://…` / `[^1]: …` definitions from the source note.
+- Citations keep working: each note gets a **References** list of the sources it cites (`[2](https://…)` links and `[2]` reference links), and footnote/reference definitions are copied from the source note.
 
-## Gemini (optional)
+## AI (optional)
 
-With an API key and an internet connection, Gemini suggests titles for untitled blocks and extra See Also links. All blocks of a run are sent in one request, so a long note does not use up the free tier's per-minute limit. Any failure falls back to the offline rules.
+Choose an **AI provider** in settings: **Gemini** (Google, free tier), **Claude** (Anthropic, paid) or **OpenAI** (paid). Each provider keeps its own API key, model and endpoint, so you can switch back and forth. The AI suggests titles for untitled blocks and extra See Also links; all blocks of a run go in one request. Any failure falls back to the offline rules.
 
-Settings: API key, **Test API key**, model (with **Refresh** to list the models your key can use, or type a name), API endpoint, timeout, **Run diagnostics**, and a connection-status line. Changing key or model never requires editing `main.js`.
+For each provider: API key with **Test API key**, model list with **Refresh**, manual model name, API endpoint, and a connection-status line. Changing provider, key or model never requires editing `main.js`.
 
-## Diagnosing Gemini
+## Diagnosing the AI
 
-- **Test API key**: confirms the key without using any generation quota.
-- **Run Gemini diagnostics** (command or settings button): checks internet, service, key, model, quota/billing, reply format and speed, with the exact reason for any failure and a **Copy report** button.
-- After each run, the notice says whether Gemini was used and, if not, why (toggle in settings).
+- **Test AI API key**: confirms the key without using quota or credit.
+- **Run AI diagnostics** (command or settings button): checks internet, service, key, model, quota/billing, reply format and speed, with the exact reason for any failure and a **Copy report** button.
+- After each run, the notice says whether the AI was used and, if not, why (toggle in settings).

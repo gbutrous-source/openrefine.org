@@ -1,18 +1,40 @@
 const { Plugin, Notice, Modal, PluginSettingTab, Setting, stringifyYaml, requestUrl } = require('obsidian');
 
-const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
-const DEFAULT_API_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+const PROVIDERS = {
+	gemini: {
+		name: 'Gemini',
+		label: 'Gemini (Google)',
+		defaultModel: 'gemini-3.5-flash-lite',
+		defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+		keyHelp: 'Google AI Studio (aistudio.google.com)',
+		costNote: 'A free tier is available.'
+	},
+	claude: {
+		name: 'Claude',
+		label: 'Claude (Anthropic)',
+		defaultModel: 'claude-opus-5',
+		defaultBaseUrl: 'https://api.anthropic.com/v1',
+		keyHelp: 'the Claude Console (platform.claude.com)',
+		costNote: 'Paid: requires API credit. Pick a smaller model (Sonnet, Haiku) for lower cost.'
+	},
+	openai: {
+		name: 'OpenAI',
+		label: 'OpenAI (ChatGPT models)',
+		defaultModel: 'gpt-5-mini',
+		defaultBaseUrl: 'https://api.openai.com/v1',
+		keyHelp: 'the OpenAI platform (platform.openai.com)',
+		costNote: 'Paid: requires API credit.'
+	}
+};
+
+const emptyProviderSettings = () => ({ apiKey: '', model: '', baseUrl: '', availableModels: [], lastCheck: null });
 
 const DEFAULT_SETTINGS = {
-	geminiApiKey: '',
-	model: DEFAULT_MODEL,
-	apiBaseUrl: DEFAULT_API_BASE_URL,
+	provider: 'gemini',
+	providers: {},
 	timeoutSeconds: 15,
 	showAiStatus: true,
-	lastDestination: 'atomic',
-	availableModels: [],
-	// { ok: true|false, message, at } from the last test, diagnostics or run.
-	lastCheck: null
+	lastDestination: 'atomic'
 };
 
 const DESTINATIONS = {
@@ -76,14 +98,14 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: 'test-gemini-api-key',
-			name: 'Test Gemini API key',
+			id: 'test-ai-api-key',
+			name: 'Test AI API key',
 			callback: () => this.testApiKey()
 		});
 
 		this.addCommand({
-			id: 'run-gemini-diagnostics',
-			name: 'Run Gemini diagnostics',
+			id: 'run-ai-diagnostics',
+			name: 'Run AI diagnostics',
 			callback: () => this.openDiagnostics()
 		});
 
@@ -91,7 +113,27 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const saved = (await this.loadData()) || {};
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+
+		// Each provider keeps its own key, model, endpoint and status.
+		const providers = {};
+		for (const key of Object.keys(PROVIDERS)) {
+			providers[key] = Object.assign(emptyProviderSettings(), (saved.providers || {})[key]);
+		}
+		this.settings.providers = providers;
+
+		// Carry over settings from versions that supported Gemini only.
+		if (saved.geminiApiKey !== undefined && !(saved.providers && saved.providers.gemini)) {
+			Object.assign(providers.gemini, {
+				apiKey: saved.geminiApiKey || '',
+				model: saved.model || '',
+				baseUrl: saved.apiBaseUrl && saved.apiBaseUrl !== PROVIDERS.gemini.defaultBaseUrl ? saved.apiBaseUrl : '',
+				availableModels: saved.availableModels || [],
+				lastCheck: saved.lastCheck || null
+			});
+		}
+		for (const legacy of ['geminiApiKey', 'model', 'apiBaseUrl', 'availableModels', 'lastCheck']) delete this.settings[legacy];
 	}
 
 	async saveSettings() {
@@ -99,7 +141,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 	}
 
 	async setLastCheck(ok, message) {
-		this.settings.lastCheck = { ok, message, at: Date.now() };
+		this.getProviderSettings().lastCheck = { ok, message, at: Date.now() };
 		await this.saveSettings();
 	}
 
@@ -394,6 +436,11 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			noteContent += `\n${cited.join('\n')}\n`;
 		}
 
+		const references = this.collectReferences(block.body, definitions);
+		if (references.length > 0) {
+			noteContent += `\n## References\n\n${references.join('\n')}\n`;
+		}
+
 		const links = this.collectLinks(block, aiLinks);
 		if (links.length > 0) {
 			noteContent += `\n## See Also\n\n${links.map((l) => `- [[${l}]]`).join('\n')}\n`;
@@ -461,6 +508,43 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			found.push(...definitions.get(key));
 		}
 		return found;
+	}
+
+	/**
+	 * Visible list of the sources this block cites, so each citation number
+	 * can be matched to its source. Covers inline citation links
+	 * ("[2](https://…)") and reference-style citations ("[2]" with a
+	 * "[2]: https://…" definition). Footnotes are left out: their
+	 * definitions are already copied into the note and shown by Obsidian.
+	 */
+	collectReferences(body, definitions) {
+		const refs = [];
+		const seen = new Set();
+		const add = (label, url, title) => {
+			const key = `${label}|${url}`;
+			if (seen.has(key)) return;
+			seen.add(key);
+			refs.push(`- [${label}] ${title ? `[${title.replace(/[[\]]/g, '')}](${url})` : url}`);
+		};
+
+		const citationLabel = /^\d+(?:[_.-]\d+)*$/;
+		const re = /(\[)?\[([^\[\]\n]+)\](?:\(\s*<?([^()\s>]+)>?(?:\s+["'(]([^"')]*)["')])?\s*\))?/g;
+		let m;
+		while ((m = re.exec(body)) !== null) {
+			if (m[1]) continue; // part of a [[wiki link]]
+			const label = m[2].trim();
+			if (!citationLabel.test(label)) continue;
+			if (m[3]) {
+				add(label, m[3], m[4]);
+				continue;
+			}
+			const def = definitions.get(`ref:${label.toLowerCase()}`);
+			if (def) {
+				const parts = def[0].match(/^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s+["'(]([^"')]*)["')])?\s*$/);
+				if (parts) add(label, parts[1], parts[2]);
+			}
+		}
+		return refs;
 	}
 
 	/**
@@ -618,19 +702,32 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 	}
 
 	// ------------------------------------------------------------------
-	// Gemini (Tier 2)
+	// AI providers (Tier 2): Gemini, Claude, OpenAI
 	// ------------------------------------------------------------------
 
+	getProviderKey() {
+		return PROVIDERS[this.settings.provider] ? this.settings.provider : 'gemini';
+	}
+
+	getProvider() {
+		return PROVIDERS[this.getProviderKey()];
+	}
+
+	/** Settings for the selected provider: { apiKey, model, baseUrl, availableModels, lastCheck }. */
+	getProviderSettings() {
+		return this.settings.providers[this.getProviderKey()];
+	}
+
 	getApiKey() {
-		return (this.settings.geminiApiKey || '').trim();
+		return (this.getProviderSettings().apiKey || '').trim();
 	}
 
 	getModel() {
-		return (this.settings.model || '').trim().replace(/^models\//, '') || DEFAULT_MODEL;
+		return (this.getProviderSettings().model || '').trim().replace(/^models\//, '') || this.getProvider().defaultModel;
 	}
 
 	getBaseUrl() {
-		return ((this.settings.apiBaseUrl || '').trim() || DEFAULT_API_BASE_URL).replace(/\/+$/, '');
+		return ((this.getProviderSettings().baseUrl || '').trim() || this.getProvider().defaultBaseUrl).replace(/\/+$/, '');
 	}
 
 	getTimeoutMs() {
@@ -640,27 +737,28 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 
 	/**
 	 * Returns { results, report }: one { title, links } entry per block
-	 * (null where Gemini was unavailable or failed), plus a report of what
+	 * (null where the AI was unavailable or failed), plus a report of what
 	 * happened for the end-of-run notice. Never throws: any failure leaves
 	 * the rule-based (Tier 1) behaviour in place.
 	 */
 	async getAiSuggestions(blocks) {
 		const results = blocks.map(() => null);
+		const provider = this.getProvider().name;
 		const apiKey = this.getApiKey();
-		if (!apiKey) return { results, report: { state: 'off' } };
+		if (!apiKey) return { results, report: { state: 'off', provider } };
 
 		try {
 			const online = await this.checkOnline();
-			if (!online.ok) return { results, report: { state: 'offline', reason: online.reason } };
+			if (!online.ok) return { results, report: { state: 'offline', provider, reason: online.reason } };
 
 			let failure = null;
 			for (const batch of this.makeBatches(blocks)) {
-				const outcome = await this.askGeminiBatch(batch.map((i) => blocks[i].body), apiKey);
+				const outcome = await this.askBatch(batch.map((i) => blocks[i].body), apiKey);
 				if (!outcome.ok) {
 					failure = outcome;
-					console.warn('Atomic notes: Gemini request failed:', outcome.reason, outcome.detail || '');
-					// Once the key or quota is refused, later requests would be too.
-					if (['invalid-key', 'permission', 'quota', 'model-not-found'].includes(outcome.kind)) break;
+					console.warn(`Atomic notes: ${provider} request failed:`, outcome.reason, outcome.detail || '');
+					// Once the key, quota or model is refused, later requests would be too.
+					if (['invalid-key', 'permission', 'quota', 'billing', 'model-not-found'].includes(outcome.kind)) break;
 					continue;
 				}
 				batch.forEach((blockIndex, n) => {
@@ -671,14 +769,15 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			const succeeded = results.filter(Boolean).length;
 			const report = {
 				state: succeeded === 0 ? 'failed' : 'used',
+				provider,
 				succeeded,
 				total: blocks.length,
 				reason: failure ? failure.reason : null
 			};
-			await this.setLastCheck(succeeded > 0, succeeded > 0 ? 'Last run used Gemini successfully.' : failure.reason);
+			await this.setLastCheck(succeeded > 0, succeeded > 0 ? `Last run used ${provider} successfully.` : failure.reason);
 			return { results, report };
 		} catch (err) {
-			return { results, report: { state: 'failed', reason: `unexpected error: ${err.message}` } };
+			return { results, report: { state: 'failed', provider, reason: `unexpected error: ${err.message}` } };
 		}
 	}
 
@@ -709,25 +808,38 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		try {
 			origin = new URL(this.getBaseUrl()).origin;
 		} catch (err) {
-			return { ok: false, reason: `the API base URL in settings is not a valid address (${this.getBaseUrl()})` };
+			return { ok: false, reason: `the API endpoint in settings is not a valid address (${this.getBaseUrl()})` };
 		}
 		try {
 			await this.withTimeout(requestUrl({ url: `${origin}/`, method: 'HEAD', throw: false }), CONNECTIVITY_TIMEOUT_MS);
 			return { ok: true };
 		} catch (err) {
+			const name = this.getProvider().name;
 			const reason =
 				err.message === 'timeout'
-					? `the Gemini service did not answer within ${CONNECTIVITY_TIMEOUT_MS / 1000}s`
-					: `cannot reach the Gemini service (${err.message})`;
+					? `the ${name} service did not answer within ${CONNECTIVITY_TIMEOUT_MS / 1000}s`
+					: `cannot reach the ${name} service (${err.message})`;
 			return { ok: false, reason };
 		}
 	}
 
+	/** Authentication and version headers for the selected provider. */
+	providerHeaders(apiKey) {
+		switch (this.getProviderKey()) {
+			case 'claude':
+				return { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' };
+			case 'openai':
+				return { Authorization: `Bearer ${apiKey}` };
+			default:
+				return { 'x-goog-api-key': apiKey };
+		}
+	}
+
 	/**
-	 * Low-level request to the Gemini API. Resolves to
+	 * Low-level request to the selected provider. Resolves to
 	 * { ok: true, data, ms } or { ok: false, kind, reason, detail, ms }.
 	 */
-	async geminiRequest(path, apiKey, method, body) {
+	async apiRequest(path, apiKey, method, body) {
 		const started = Date.now();
 		let response;
 		try {
@@ -736,7 +848,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 					url: `${this.getBaseUrl()}/${path}`,
 					method,
 					contentType: body ? 'application/json' : undefined,
-					headers: { 'x-goog-api-key': apiKey },
+					headers: this.providerHeaders(apiKey),
 					body: body ? JSON.stringify(body) : undefined,
 					throw: false
 				}),
@@ -763,31 +875,40 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			// Leave data null; handled below.
 		}
 
-		if (response.status !== 200) {
-			return Object.assign({ ok: false, ms, detail: data || response.text }, this.classifyHttpError(response.status, data, response.text));
+		if (response.status < 200 || response.status >= 300) {
+			return Object.assign(
+				{ ok: false, ms, status: response.status, detail: data || response.text },
+				this.classifyHttpError(response.status, data, response.text)
+			);
 		}
 		return { ok: true, ms, data };
 	}
 
-	/** Turns an HTTP error from Google into { kind, reason } in plain language. */
+	/** Turns an HTTP error from any provider into { kind, reason } in plain language. */
 	classifyHttpError(status, data, text) {
 		const error = (data && data.error) || {};
 		const message = error.message || (text || '').slice(0, 200) || 'no details';
+		const type = `${error.type || ''} ${error.code || ''} ${error.status || ''}`;
 		const details = Array.isArray(error.details) ? error.details : [];
 		const reasons = details.map((d) => d.reason).filter(Boolean);
+		const provider = this.getProvider();
 		const model = this.getModel();
 
-		if (reasons.includes('API_KEY_INVALID') || /api key not valid/i.test(message)) {
-			return { kind: 'invalid-key', reason: 'API key is invalid or incorrectly copied. Paste it again from Google AI Studio.' };
+		if (
+			status === 401 ||
+			reasons.includes('API_KEY_INVALID') ||
+			/api key not valid|invalid[_ ]api[_ ]key|invalid x-api-key|authentication_error/i.test(`${message} ${type}`)
+		) {
+			return { kind: 'invalid-key', reason: `${provider.name} API key is invalid, expired or incorrectly copied. Paste it again from ${provider.keyHelp}.` };
 		}
-		if (/expired/i.test(message)) {
-			return { kind: 'invalid-key', reason: 'API key has expired. Create a new key in Google AI Studio.' };
+		if (/expired/i.test(message) && /key/i.test(message)) {
+			return { kind: 'invalid-key', reason: `${provider.name} API key has expired. Create a new key in ${provider.keyHelp}.` };
 		}
-		if (status === 401 || status === 403) {
-			return {
-				kind: 'permission',
-				reason: `API key was refused (HTTP ${status}). The Gemini API may not be enabled for this key's project. Google says: ${message}`
-			};
+		if (/credit balance|insufficient_quota|billing|payment|FAILED_PRECONDITION/i.test(`${message} ${type}`)) {
+			return { kind: 'billing', reason: `The API key is valid, but billing or credit needs attention. ${provider.name} says: ${message}` };
+		}
+		if (status === 403) {
+			return { kind: 'permission', reason: `API key was refused (HTTP 403): it lacks permission for this request. ${provider.name} says: ${message}` };
 		}
 		if (status === 404) {
 			return {
@@ -796,15 +917,16 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			};
 		}
 		if (status === 429) {
-			return { kind: 'quota', reason: this.describeQuotaError(message, details) };
+			if (this.getProviderKey() === 'gemini') return { kind: 'quota', reason: this.describeQuotaError(message, details) };
+			return { kind: 'quota', reason: `The API key is valid, but the rate limit has been reached. Wait a minute and try again. ${provider.name} says: ${message}` };
+		}
+		if (status === 529 || status === 503) {
+			return { kind: 'server', reason: `${provider.name} is overloaded right now (HTTP ${status}). Try again in a few minutes.` };
 		}
 		if (status >= 500) {
-			return { kind: 'server', reason: `Google's Gemini service had an error (HTTP ${status}). Try again later.` };
+			return { kind: 'server', reason: `${provider.name}'s service had an error (HTTP ${status}). Try again later.` };
 		}
-		if (/billing|FAILED_PRECONDITION/i.test(message) || error.status === 'FAILED_PRECONDITION') {
-			return { kind: 'billing', reason: `The API key is valid, but billing needs attention. Google says: ${message}` };
-		}
-		return { kind: 'bad-request', reason: `Request rejected (HTTP ${status}). Google says: ${message}` };
+		return { kind: 'bad-request', reason: `Request rejected (HTTP ${status}). ${provider.name} says: ${message}` };
 	}
 
 	describeQuotaError(message, details) {
@@ -832,11 +954,11 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 	 * Sends several blocks in one request. Resolves to
 	 * { ok: true, results: [{ title, links } | null, …], ms } or a failure.
 	 */
-	async askGeminiBatch(texts, apiKey) {
+	async askBatch(texts, apiKey) {
 		const prompt = [
 			'You are helping build a Zettelkasten knowledge base in Obsidian.',
 			`Below are ${texts.length} note(s), each marked with an id.`,
-			'For every note, reply with JSON only, in exactly this shape:',
+			'For every note, reply with JSON only, no other text, in exactly this shape:',
 			'{"notes": [{"id": 1, "title": "<title>", "links": ["<term>", "<term>"]}]}',
 			'',
 			'Rules:',
@@ -858,7 +980,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 				ok: false,
 				ms: outcome.ms,
 				kind: 'format',
-				reason: `Gemini's answer was not in the expected format: ${outcome.text.slice(0, 120)}`,
+				reason: `The answer was not in the expected format: ${outcome.text.slice(0, 120)}`,
 				detail: outcome.text
 			};
 		}
@@ -870,9 +992,20 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		return { ok: true, ms: outcome.ms, results };
 	}
 
-	/** One generateContent call. Resolves to { ok: true, text, ms } or a failure. */
+	/** One text-generation call. Resolves to { ok: true, text, ms } or a failure. */
 	async generate(prompt, apiKey) {
-		const outcome = await this.geminiRequest(`models/${encodeURIComponent(this.getModel())}:generateContent`, apiKey, 'POST', {
+		switch (this.getProviderKey()) {
+			case 'claude':
+				return this.generateClaude(prompt, apiKey);
+			case 'openai':
+				return this.generateOpenAI(prompt, apiKey);
+			default:
+				return this.generateGemini(prompt, apiKey);
+		}
+	}
+
+	async generateGemini(prompt, apiKey) {
+		const outcome = await this.apiRequest(`models/${encodeURIComponent(this.getModel())}:generateContent`, apiKey, 'POST', {
 			contents: [{ role: 'user', parts: [{ text: prompt }] }],
 			generationConfig: { responseMimeType: 'application/json' }
 		});
@@ -882,13 +1015,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		const candidate = data && data.candidates && data.candidates[0];
 		if (!candidate) {
 			const blocked = data && data.promptFeedback && data.promptFeedback.blockReason;
-			return {
-				ok: false,
-				ms: outcome.ms,
-				kind: 'empty',
-				reason: blocked ? `Gemini refused the text (${blocked}).` : 'Gemini returned no answer.',
-				detail: data
-			};
+			return this.emptyReply(outcome, blocked ? `Gemini refused the text (${blocked}).` : 'Gemini returned no answer.', data);
 		}
 
 		// Skip "thought" parts some models return alongside the answer.
@@ -898,15 +1025,69 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			.map((p) => p.text || '')
 			.join('');
 		if (!text.trim()) {
-			return {
-				ok: false,
-				ms: outcome.ms,
-				kind: 'empty',
-				reason: `Gemini returned an empty answer (finishReason: ${candidate.finishReason || 'unknown'}).`,
-				detail: data
-			};
+			return this.emptyReply(outcome, `Gemini returned an empty answer (finishReason: ${candidate.finishReason || 'unknown'}).`, data);
 		}
 		return { ok: true, ms: outcome.ms, text };
+	}
+
+	async generateClaude(prompt, apiKey) {
+		const body = {
+			model: this.getModel(),
+			max_tokens: 16000,
+			// Low effort keeps simple extraction fast and cheap on models that
+			// support it; models that do not are retried without it below.
+			output_config: { effort: 'low' },
+			messages: [{ role: 'user', content: prompt }]
+		};
+		let outcome = await this.apiRequest('messages', apiKey, 'POST', body);
+		if (!outcome.ok && outcome.status === 400 && /effort|output_config/i.test(JSON.stringify(outcome.detail || ''))) {
+			delete body.output_config;
+			outcome = await this.apiRequest('messages', apiKey, 'POST', body);
+		}
+		if (!outcome.ok) return outcome;
+
+		const data = outcome.data || {};
+		if (data.stop_reason === 'refusal') {
+			return this.emptyReply(outcome, 'Claude declined to process this text (refusal).', data);
+		}
+		// Only "text" blocks carry the answer; skip "thinking" blocks.
+		const text = (data.content || [])
+			.filter((b) => b.type === 'text')
+			.map((b) => b.text || '')
+			.join('');
+		if (!text.trim()) {
+			return this.emptyReply(outcome, `Claude returned an empty answer (stop_reason: ${data.stop_reason || 'unknown'}).`, data);
+		}
+		return { ok: true, ms: outcome.ms, text };
+	}
+
+	async generateOpenAI(prompt, apiKey) {
+		const body = {
+			model: this.getModel(),
+			messages: [{ role: 'user', content: prompt }],
+			response_format: { type: 'json_object' }
+		};
+		let outcome = await this.apiRequest('chat/completions', apiKey, 'POST', body);
+		if (!outcome.ok && outcome.status === 400 && /response_format/i.test(JSON.stringify(outcome.detail || ''))) {
+			delete body.response_format;
+			outcome = await this.apiRequest('chat/completions', apiKey, 'POST', body);
+		}
+		if (!outcome.ok) return outcome;
+
+		const choice = outcome.data && outcome.data.choices && outcome.data.choices[0];
+		const messageObj = (choice && choice.message) || {};
+		if (messageObj.refusal) {
+			return this.emptyReply(outcome, `OpenAI declined to process this text: ${messageObj.refusal}`, outcome.data);
+		}
+		const text = messageObj.content || '';
+		if (!text.trim()) {
+			return this.emptyReply(outcome, `OpenAI returned an empty answer (finish_reason: ${(choice && choice.finish_reason) || 'unknown'}).`, outcome.data);
+		}
+		return { ok: true, ms: outcome.ms, text };
+	}
+
+	emptyReply(outcome, reason, detail) {
+		return { ok: false, ms: outcome.ms, kind: 'empty', reason, detail };
 	}
 
 	parseJson(raw) {
@@ -937,26 +1118,62 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		return { title: title || null, links };
 	}
 
-	/** Models this key can use for generateContent, e.g. "gemini-3.5-flash-lite". */
+	/** Text models this key can use. Resolves to { ok: true, models } or a failure. */
 	async listModels(apiKey) {
 		const models = [];
+		const key = this.getProviderKey();
 		let pageToken = '';
-		for (let page = 0; page < 5; page++) {
-			const outcome = await this.geminiRequest(
-				`models?pageSize=1000${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`,
-				apiKey,
-				'GET'
-			);
+
+		for (let page = 0; page < 10; page++) {
+			let path;
+			if (key === 'gemini') path = `models?pageSize=1000${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`;
+			else if (key === 'claude') path = `models?limit=1000${pageToken ? `&after_id=${encodeURIComponent(pageToken)}` : ''}`;
+			else path = 'models';
+
+			const outcome = await this.apiRequest(path, apiKey, 'GET');
 			if (!outcome.ok) return outcome;
-			for (const m of (outcome.data && outcome.data.models) || []) {
-				const methods = m.supportedGenerationMethods || [];
-				const id = (m.name || '').replace(/^models\//, '');
-				if (id.startsWith('gemini') && methods.includes('generateContent')) models.push(id);
+			const data = outcome.data || {};
+
+			if (key === 'gemini') {
+				for (const m of data.models || []) {
+					const id = (m.name || '').replace(/^models\//, '');
+					if (id.startsWith('gemini') && (m.supportedGenerationMethods || []).includes('generateContent')) models.push(id);
+				}
+				pageToken = data.nextPageToken;
+			} else if (key === 'claude') {
+				for (const m of data.data || []) if (m.id) models.push(m.id);
+				pageToken = data.has_more ? data.last_id : '';
+			} else {
+				for (const m of data.data || []) {
+					const id = m.id || '';
+					if (/^(gpt|o\d|chatgpt)/.test(id) && !/audio|realtime|transcribe|tts|image|search|embedding|moderation|dall-e|whisper/.test(id)) {
+						models.push(id);
+					}
+				}
+				pageToken = '';
 			}
-			pageToken = outcome.data && outcome.data.nextPageToken;
 			if (!pageToken) break;
 		}
-		return { ok: true, models: models.sort() };
+		return { ok: true, models: Array.from(new Set(models)).sort() };
+	}
+
+	/** Checks that the selected model exists and can generate text. */
+	async checkModel(apiKey) {
+		const key = this.getProviderKey();
+		const model = this.getModel();
+		const info = await this.apiRequest(`models/${encodeURIComponent(model)}`, apiKey, 'GET');
+		if (!info.ok) {
+			const reason = info.kind === 'model-not-found' ? `Model "${model}" does not exist or is not available to this key.` : info.reason;
+			return { ok: false, reason };
+		}
+		const data = info.data || {};
+		if (key === 'gemini') {
+			const methods = data.supportedGenerationMethods || [];
+			if (methods.length && !methods.includes('generateContent')) {
+				return { ok: false, reason: `Model "${model}" exists but does not support text generation (generateContent).` };
+			}
+		}
+		return { ok: true, name: data.displayName || data.display_name || data.id || model };
 	}
 
 	// ------------------------------------------------------------------
@@ -965,15 +1182,16 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 
 	/**
 	 * Quick key check. Lists the models the key can use, which confirms the
-	 * key without spending any generation quota.
+	 * key without spending any generation quota or credit.
 	 */
 	async testApiKey() {
+		const provider = this.getProvider();
 		const apiKey = this.getApiKey();
 		let ok = false;
 		let message;
 
 		if (!apiKey) {
-			message = 'No API key saved. Paste your Gemini API key in settings.';
+			message = `No ${provider.name} API key saved. Paste your key in settings.`;
 		} else {
 			const online = await this.checkOnline();
 			if (!online.ok) {
@@ -983,13 +1201,13 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 				if (!listed.ok) {
 					message = listed.reason;
 				} else {
-					this.settings.availableModels = listed.models;
+					this.getProviderSettings().availableModels = listed.models;
 					const model = this.getModel();
 					if (listed.models.length && !listed.models.includes(model)) {
-						message = `The API key is valid, but model "${model}" is not available. Pick another model in settings.`;
+						message = `The ${provider.name} API key is valid, but model "${model}" is not available. Pick another model in settings.`;
 					} else {
 						ok = true;
-						message = `API key is valid and connected successfully (model: ${model}).`;
+						message = `${provider.name} API key is valid and connected successfully (model: ${model}).`;
 					}
 				}
 			}
@@ -1019,14 +1237,15 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		};
 		const skipRest = (names) => names.forEach((n) => add(n, 'skip', 'Skipped because an earlier step failed.'));
 
+		const provider = this.getProvider();
 		const apiKey = this.getApiKey();
-		const model = this.getModel();
-		const later = ['API key valid', 'Model available', 'Generation and quota', 'Reply format', 'Speed'];
+		const later = ['API key valid', 'Model available', 'Generation, quota and billing', 'Reply format', 'Speed'];
+		const service = `${provider.name} service reachable`;
 
 		// 1. Internet
 		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
 			add('Internet connection', 'fail', 'This device reports no internet connection. Offline rules will be used.');
-			skipRest(['Gemini service reachable', 'API key present', ...later]);
+			skipRest([service, 'API key present', ...later]);
 			return this.finishDiagnostics(steps);
 		}
 		add('Internet connection', 'pass', 'This device is online.');
@@ -1034,63 +1253,57 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		// 2. Service reachable
 		const online = await this.checkOnline();
 		if (!online.ok) {
-			add('Gemini service reachable', 'fail', `${online.reason.charAt(0).toUpperCase()}${online.reason.slice(1)}.`);
+			add(service, 'fail', `${online.reason.charAt(0).toUpperCase()}${online.reason.slice(1)}.`);
 			skipRest(['API key present', ...later]);
 			return this.finishDiagnostics(steps);
 		}
-		add('Gemini service reachable', 'pass', this.getBaseUrl());
+		add(service, 'pass', this.getBaseUrl());
 
 		// 3. Key present
 		if (!apiKey) {
-			add('API key present', 'fail', 'No API key saved. Paste your Gemini API key in settings.');
+			add('API key present', 'fail', `No ${provider.name} API key saved. Paste your key in settings (get one from ${provider.keyHelp}).`);
 			skipRest(later);
 			return this.finishDiagnostics(steps);
 		}
 		add('API key present', 'pass', `${apiKey.length} characters, ending …${apiKey.slice(-4)}.`);
 
-		// 4. Key valid (listing models spends no generation quota)
+		// 4. Key valid (listing models spends no quota or credit)
 		const listed = await this.listModels(apiKey);
 		if (!listed.ok) {
 			add('API key valid', 'fail', listed.reason);
 			skipRest(later.slice(1));
 			return this.finishDiagnostics(steps);
 		}
-		this.settings.availableModels = listed.models;
-		add('API key valid', 'pass', `Key accepted. ${listed.models.length} Gemini model(s) available to it.`);
+		this.getProviderSettings().availableModels = listed.models;
+		add('API key valid', 'pass', `Key accepted. ${listed.models.length} model(s) available to it.`);
 
-		// 5. Model available and supports generateContent
-		const info = await this.geminiRequest(`models/${encodeURIComponent(model)}`, apiKey, 'GET');
-		if (!info.ok) {
-			add('Model available', 'fail', info.kind === 'model-not-found' ? `Model "${model}" does not exist or is not available to this key.` : info.reason);
+		// 5. Model available
+		const model = await this.checkModel(apiKey);
+		if (!model.ok) {
+			add('Model available', 'fail', model.reason);
 			skipRest(later.slice(2));
 			return this.finishDiagnostics(steps);
 		}
-		const methods = (info.data && info.data.supportedGenerationMethods) || [];
-		if (methods.length && !methods.includes('generateContent')) {
-			add('Model available', 'fail', `Model "${model}" exists but does not support text generation (generateContent).`);
-			skipRest(later.slice(2));
-			return this.finishDiagnostics(steps);
-		}
-		add('Model available', 'pass', `${(info.data && info.data.displayName) || model} supports generateContent.`);
+		add('Model available', 'pass', `${model.name} (${this.getModel()}).`);
 
-		// 6. Generation request (uses one request of quota)
-		const outcome = await this.askGeminiBatch(
+		// 6. Generation request (uses one request of quota or credit)
+		const outcome = await this.askBatch(
 			[
 				'Galen of Pergamon believed that blood was produced in the liver and consumed by the organs. William Harvey later showed that blood circulates.'
 			],
 			apiKey
 		);
 		if (!outcome.ok && outcome.kind !== 'format') {
-			add('Generation and quota', 'fail', outcome.reason);
+			add('Generation, quota and billing', 'fail', outcome.reason);
 			skipRest(later.slice(3));
 			return this.finishDiagnostics(steps);
 		}
-		add('Generation and quota', 'pass', 'Test request accepted; quota and billing are fine for now.');
+		add('Generation, quota and billing', 'pass', 'Test request accepted; quota and billing are fine for now.');
 
 		// 7. Reply format
 		const suggestion = outcome.ok && outcome.results[0];
 		if (!suggestion) {
-			add('Reply format', 'fail', outcome.reason || 'Gemini replied, but the plugin could not read the answer.');
+			add('Reply format', 'fail', outcome.reason || 'The AI replied, but the plugin could not read the answer.');
 		} else {
 			add('Reply format', 'pass', `Title: ${suggestion.title || '(none)'}. Links: ${suggestion.links.join(', ') || '(none)'}.`);
 		}
@@ -1109,24 +1322,25 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 
 	async finishDiagnostics(steps) {
 		const failed = steps.find((s) => s.status === 'fail');
-		const message = failed ? `${failed.name}: ${failed.detail}` : 'All Gemini checks passed.';
+		const message = failed ? `${failed.name}: ${failed.detail}` : `All ${this.getProvider().name} checks passed.`;
 		await this.setLastCheck(!failed, message);
 		return steps;
 	}
 
-	/** One-line summary of what Gemini did in this run, shown after the run. */
+	/** One-line summary of what the AI did in this run, shown after the run. */
 	describeAiReport(report) {
+		const name = report.provider || 'AI';
 		switch (report.state) {
 			case 'off':
-				return 'Gemini: not used (no API key in settings).';
+				return `AI: not used (no ${name} API key in settings).`;
 			case 'offline':
-				return `Offline mode: Gemini unavailable (${report.reason}); offline rules used.`;
+				return `Offline mode: ${name} unavailable (${report.reason}); offline rules used.`;
 			case 'failed':
-				return `Gemini: failed, offline rules used.\n${report.reason}`;
+				return `${name}: failed, offline rules used.\n${report.reason}`;
 			default:
 				return report.succeeded === report.total
-					? `Gemini: used for all ${report.total} block(s).`
-					: `Gemini: used for ${report.succeeded} of ${report.total} block(s); offline rules for the rest.\n${report.reason}`;
+					? `${name}: used for all ${report.total} block(s).`
+					: `${name}: used for ${report.succeeded} of ${report.total} block(s); offline rules for the rest.\n${report.reason}`;
 		}
 	}
 
@@ -1231,8 +1445,9 @@ class DiagnosticsModal extends Modal {
 
 	async onOpen() {
 		const { contentEl } = this;
+		const title = `${this.plugin.getProvider().name} diagnostics`;
 		contentEl.empty();
-		this.setTitle ? this.setTitle('Gemini diagnostics') : contentEl.createEl('h3', { text: 'Gemini diagnostics' });
+		this.setTitle ? this.setTitle(title) : contentEl.createEl('h3', { text: title });
 
 		contentEl.createEl('div', {
 			text: `Model: ${this.plugin.getModel()} · Endpoint: ${this.plugin.getBaseUrl()}`
@@ -1266,14 +1481,15 @@ class DiagnosticsModal extends Modal {
 			detail.style.userSelect = 'text';
 		});
 
+		const name = this.plugin.getProvider().name;
 		const failed = this.steps.some((s) => s.status === 'fail');
-		running.setText(failed ? 'Gemini is not working. See the first ✗ above.' : 'Gemini is ready.');
+		running.setText(failed ? `${name} is not working. See the first ✗ above.` : `${name} is ready.`);
 		running.style.fontWeight = 'bold';
 	}
 
 	reportText() {
 		const lines = [
-			'Gemini diagnostics',
+			`${this.plugin.getProvider().name} diagnostics`,
 			`Model: ${this.plugin.getModel()}`,
 			`Endpoint: ${this.plugin.getBaseUrl()}`,
 			`Time: ${new Date().toISOString()}`,
@@ -1296,39 +1512,54 @@ class AtomicGlossarySettingTab extends PluginSettingTab {
 
 	display() {
 		const { containerEl } = this;
-		const settings = this.plugin.settings;
+		const plugin = this.plugin;
+		const settings = plugin.settings;
+		const provider = plugin.getProvider();
+		const ps = plugin.getProviderSettings();
 		containerEl.empty();
 
 		containerEl.createEl('h2', { text: 'Atomic & Glossary Note Creator settings' });
 
+		new Setting(containerEl)
+			.setName('AI provider')
+			.setDesc('Which AI suggests titles and See Also links. Each provider keeps its own key and model. Without a key, the offline rules are used.')
+			.addDropdown((dropdown) => {
+				for (const [key, p] of Object.entries(PROVIDERS)) dropdown.addOption(key, p.label);
+				dropdown.setValue(plugin.getProviderKey()).onChange(async (value) => {
+					settings.provider = value;
+					await plugin.saveSettings();
+					this.display();
+				});
+			});
+
 		this.renderStatus(containerEl);
 
-		containerEl.createEl('h3', { text: 'Gemini connection' });
+		containerEl.createEl('h3', { text: `${provider.name} connection` });
 
 		new Setting(containerEl)
-			.setName('Gemini API key')
-			.setDesc('Optional. When empty, or when offline, notes are created with the offline rules only.')
+			.setName(`${provider.name} API key`)
+			.setDesc(`Get a key from ${provider.keyHelp}. ${provider.costNote}`)
 			.addText((text) => {
 				text.inputEl.type = 'password';
 				text
 					.setPlaceholder('Paste your API key')
-					.setValue(settings.geminiApiKey)
+					.setValue(ps.apiKey)
 					.onChange(async (value) => {
-						settings.geminiApiKey = value.trim();
-						settings.lastCheck = null;
-						await this.plugin.saveSettings();
+						ps.apiKey = value.trim();
+						ps.lastCheck = null;
+						await plugin.saveSettings();
 					});
 			})
 			.addButton((btn) =>
 				btn.setButtonText('Test API key').onClick(async () => {
 					btn.setDisabled(true).setButtonText('Testing…');
-					await this.plugin.testApiKey();
+					await plugin.testApiKey();
 					this.display();
 				})
 			);
 
-		const model = this.plugin.getModel();
-		const known = settings.availableModels || [];
+		const model = plugin.getModel();
+		const known = ps.availableModels || [];
 		new Setting(containerEl)
 			.setName('Model')
 			.setDesc(
@@ -1338,11 +1569,11 @@ class AtomicGlossarySettingTab extends PluginSettingTab {
 			)
 			.addDropdown((dropdown) => {
 				const options = known.includes(model) ? known : [model, ...known];
-				options.forEach((m) => dropdown.addOption(m, m === DEFAULT_MODEL ? `${m} (default)` : m));
+				options.forEach((m) => dropdown.addOption(m, m === provider.defaultModel ? `${m} (default)` : m));
 				dropdown.setValue(model).onChange(async (value) => {
-					settings.model = value;
-					settings.lastCheck = null;
-					await this.plugin.saveSettings();
+					ps.model = value;
+					ps.lastCheck = null;
+					await plugin.saveSettings();
 					this.display();
 				});
 			})
@@ -1351,45 +1582,45 @@ class AtomicGlossarySettingTab extends PluginSettingTab {
 					.setIcon('refresh-cw')
 					.setTooltip('Refresh available models')
 					.onClick(async () => {
-						const apiKey = this.plugin.getApiKey();
+						const apiKey = plugin.getApiKey();
 						if (!apiKey) {
 							new Notice('Enter an API key first.');
 							return;
 						}
-						const listed = await this.plugin.listModels(apiKey);
+						const listed = await plugin.listModels(apiKey);
 						if (!listed.ok) {
 							new Notice(`Could not load models: ${listed.reason}`, 12000);
 							return;
 						}
-						settings.availableModels = listed.models;
-						await this.plugin.saveSettings();
-						new Notice(`Found ${listed.models.length} Gemini model(s).`);
+						ps.availableModels = listed.models;
+						await plugin.saveSettings();
+						new Notice(`Found ${listed.models.length} ${provider.name} model(s).`);
 						this.display();
 					})
 			);
 
 		new Setting(containerEl)
 			.setName('Model name (manual)')
-			.setDesc('Type a model name here if it is not in the list, e.g. gemini-3.5-flash-lite.')
+			.setDesc(`Type a model name here if it is not in the list, e.g. ${provider.defaultModel}.`)
 			.addText((text) =>
 				text.setValue(model).onChange(async (value) => {
-					settings.model = value.trim() || DEFAULT_MODEL;
-					settings.lastCheck = null;
-					await this.plugin.saveSettings();
+					ps.model = value.trim();
+					ps.lastCheck = null;
+					await plugin.saveSettings();
 				})
 			);
 
 		new Setting(containerEl)
 			.setName('API endpoint')
-			.setDesc('Base address of the Gemini API. Change only if Google moves the API.')
+			.setDesc(`Base address of the ${provider.name} API. Change only if the provider moves its API or you use a proxy.`)
 			.addText((text) =>
 				text
-					.setPlaceholder(DEFAULT_API_BASE_URL)
-					.setValue(settings.apiBaseUrl)
+					.setPlaceholder(provider.defaultBaseUrl)
+					.setValue(ps.baseUrl || provider.defaultBaseUrl)
 					.onChange(async (value) => {
-						settings.apiBaseUrl = value.trim() || DEFAULT_API_BASE_URL;
-						settings.lastCheck = null;
-						await this.plugin.saveSettings();
+						ps.baseUrl = value.trim();
+						ps.lastCheck = null;
+						await plugin.saveSettings();
 					})
 			)
 			.addExtraButton((btn) =>
@@ -1397,15 +1628,24 @@ class AtomicGlossarySettingTab extends PluginSettingTab {
 					.setIcon('rotate-ccw')
 					.setTooltip('Restore default')
 					.onClick(async () => {
-						settings.apiBaseUrl = DEFAULT_API_BASE_URL;
-						await this.plugin.saveSettings();
+						ps.baseUrl = '';
+						await plugin.saveSettings();
 						this.display();
 					})
 			);
 
+		containerEl.createEl('h3', { text: 'Diagnostics' });
+
+		new Setting(containerEl)
+			.setName(`Run ${provider.name} diagnostics`)
+			.setDesc('Checks internet, service, key, model, quota and billing, reply format and speed, and shows the exact error for any failure.')
+			.addButton((btn) => btn.setButtonText('Run diagnostics').onClick(() => plugin.openDiagnostics()));
+
+		containerEl.createEl('h3', { text: 'General' });
+
 		new Setting(containerEl)
 			.setName('Timeout (seconds)')
-			.setDesc('How long to wait for Gemini before falling back to the offline rules.')
+			.setDesc('How long to wait for the AI before falling back to the offline rules.')
 			.addText((text) => {
 				text.inputEl.type = 'number';
 				text.inputEl.min = '1';
@@ -1413,32 +1653,27 @@ class AtomicGlossarySettingTab extends PluginSettingTab {
 					const n = Number(value);
 					if (Number.isFinite(n) && n > 0) {
 						settings.timeoutSeconds = n;
-						await this.plugin.saveSettings();
+						await plugin.saveSettings();
 					}
 				});
 			});
 
-		containerEl.createEl('h3', { text: 'Diagnostics' });
-
 		new Setting(containerEl)
-			.setName('Run Gemini diagnostics')
-			.setDesc('Checks internet, service, key, model, quota and billing, reply format and speed, and shows the exact error for any failure.')
-			.addButton((btn) => btn.setButtonText('Run diagnostics').onClick(() => this.plugin.openDiagnostics()));
-
-		new Setting(containerEl)
-			.setName('Show Gemini status after each run')
-			.setDesc('Adds a line to the end-of-run notice saying whether Gemini was used, and why not if it was not.')
+			.setName('Show AI status after each run')
+			.setDesc('Adds a line to the end-of-run notice saying whether the AI was used, and why not if it was not.')
 			.addToggle((toggle) =>
 				toggle.setValue(settings.showAiStatus).onChange(async (value) => {
 					settings.showAiStatus = value;
-					await this.plugin.saveSettings();
+					await plugin.saveSettings();
 				})
 			);
 	}
 
 	/** Connection-status indicator from the last test, diagnostics or run. */
 	renderStatus(containerEl) {
-		const check = this.plugin.settings.lastCheck;
+		const plugin = this.plugin;
+		const check = plugin.getProviderSettings().lastCheck;
+		const name = plugin.getProvider().name;
 		const box = containerEl.createDiv();
 		box.style.padding = '0.6em 0.8em';
 		box.style.margin = '0.5em 0 1em';
@@ -1447,16 +1682,16 @@ class AtomicGlossarySettingTab extends PluginSettingTab {
 
 		const dot = box.createEl('span', { text: '● ' });
 		let label;
-		if (!this.plugin.getApiKey()) {
+		if (!plugin.getApiKey()) {
 			dot.style.color = 'var(--text-faint)';
-			label = 'No API key: offline rules only.';
+			label = `No ${name} API key: offline rules only.`;
 		} else if (!check) {
 			dot.style.color = 'var(--text-faint)';
-			label = 'Not tested yet. Click "Test API key" or "Run diagnostics".';
+			label = `${name}: not tested yet. Click "Test API key" or "Run diagnostics".`;
 		} else {
 			dot.style.color = check.ok ? 'var(--color-green)' : 'var(--color-red)';
 			const when = new Date(check.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-			label = `${check.ok ? 'Connected' : 'Problem'} (${when}): ${check.message}`;
+			label = `${name} ${check.ok ? 'connected' : 'problem'} (${when}): ${check.message}`;
 		}
 		box.createEl('span', { text: label });
 	}
