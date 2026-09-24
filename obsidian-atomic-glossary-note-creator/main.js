@@ -18,7 +18,7 @@ const FENCE_REGEX = /^\s{0,3}(```|~~~)/;
 const ILLEGAL_FILENAME_CHARS = /[\\/:*?"<>|#^[\]\u0000-\u001f]/g;
 const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 
-const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent';
+const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent';
 const GEMINI_TIMEOUT_MS = 5000;
 const CONNECTIVITY_TIMEOUT_MS = 3000;
 const GEMINI_CONCURRENCY = 4;
@@ -556,7 +556,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 				contentType: 'application/json',
 				body: JSON.stringify({
 					contents: [{ parts: [{ text: prompt }] }],
-					generationConfig: { temperature: 0.2, maxOutputTokens: 256 }
+					generationConfig: { maxOutputTokens: 1024 }
 				}),
 				throw: false
 			}),
