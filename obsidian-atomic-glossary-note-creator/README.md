@@ -8,7 +8,7 @@ Copy `main.js` and `manifest.json` into `<vault>/.obsidian/plugins/atomic-glossa
 
 ## Use
 
-- Run **Create AI Note** (assign it one hotkey). A dialog asks for **Atomic note** (`Atomic Notes/`) or **Glossary entry** (`Glossary/`). Press **A** or **G** to create at once; the last choice is remembered.
+- Run **Create Atomic or Glossary Note** (assign it one hotkey). A dialog asks for **Atomic note** (`Atomic Notes/`) or **Glossary entry** (`Glossary/`). Press **A** or **G** to create at once; the last choice is remembered.
 - A block starts at an `##`/`###` heading or at a line holding only `#newatomicnote`.
 - A block ends at `¤¤` alone on a line, the next `##`/`###`, the next `#newatomicnote`, or the end of the selection/document.
 - Select text to process only the selection; with no selection the whole note is processed.

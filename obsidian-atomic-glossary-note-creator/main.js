@@ -16,8 +16,8 @@ const DEFAULT_SETTINGS = {
 };
 
 const DESTINATIONS = {
-	atomic: { label: 'Atomic note', folder: 'Atomic Notes', type: 'atomic', key: 'a' },
-	glossary: { label: 'Glossary entry', folder: 'Glossary', type: 'Glossary', key: 'g' }
+	atomic: { label: 'Create atomic note', folder: 'Atomic Notes', type: 'atomic', key: 'a' },
+	glossary: { label: 'Create glossary note', folder: 'Glossary', type: 'Glossary', key: 'g' }
 };
 
 const NEW_NOTE_TAG = '#newatomicnote';
@@ -70,8 +70,8 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		await this.loadSettings();
 
 		this.addCommand({
-			id: 'create-ai-note',
-			name: 'Create AI Note',
+			id: 'create-atomic-or-glossary-note',
+			name: 'Create Atomic or Glossary Note',
 			editorCallback: (editor, view) => this.run(editor, view)
 		});
 
@@ -104,7 +104,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 	}
 
 	/**
-	 * Entry point for "Create AI Note". Asks for atomic note or glossary
+	 * Entry point for "Create Atomic or Glossary Note". Asks for atomic note or glossary
 	 * entry, splits the selection (or the whole note) into blocks,
 	 * optionally enriches them with Gemini, then writes one note per block.
 	 */
@@ -1159,7 +1159,7 @@ class DestinationModal extends Modal {
 	onOpen() {
 		const { contentEl } = this;
 		contentEl.empty();
-		this.setTitle ? this.setTitle('Create AI Note') : contentEl.createEl('h3', { text: 'Create AI Note' });
+		this.setTitle ? this.setTitle('Create Atomic or Glossary Note') : contentEl.createEl('h3', { text: 'Create Atomic or Glossary Note' });
 
 		const options = contentEl.createDiv();
 		for (const [key, dest] of Object.entries(DESTINATIONS)) {
