@@ -12,7 +12,7 @@ Copy `main.js` and `manifest.json` into `<vault>/.obsidian/plugins/atomic-glossa
 - A block starts at an `##`/`###` heading or at a line holding only `#newatomicnote`.
 - A block ends at `¤¤` alone on a line, the next `##`/`###`, the next `#newatomicnote`, or the end of the selection/document.
 - Select text to process only the selection; with no selection the whole note is processed.
-- Citations keep working: each note gets a **References** list of the sources it cites (`[2](https://…)` links and `[2]` reference links), and footnote/reference definitions are copied from the source note.
+- Numbered citations such as `[1][6]` become Obsidian footnotes (`[^1][^6]`) linked to their sources, which appear as a numbered list at the bottom of each note. The source list in the original note may be written as `[1]: https://…`, `[^1]: …`, `[1] Title https://…` or `1. [Title](https://…)`. If the note has no source list, the end-of-run notice says which numbers could not be linked.
 
 ## AI (optional)
 

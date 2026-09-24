@@ -52,6 +52,10 @@ const FENCE_REGEX = /^\s{0,3}(```|~~~)/;
 const REF_DEF_REGEX = /^\s{0,3}\[([^\]^\n][^\]\n]*)\]:\s*\S/;
 const FOOTNOTE_DEF_REGEX = /^\s{0,3}\[\^([^\]\n]+)\]:/;
 const INDENTED_CONTINUATION = /^( {4}|\t)\S/;
+const CITATION_LABEL = /^\d+(?:[_.-]\d+)*$/;
+// Lines of a citation source list: "[1] Title https://…" or "1. [Title](https://…)".
+const BRACKET_SOURCE_LINE = /^\s{0,3}(?:[-*+]\s+)?\[\^?\d+(?:[_.-]\d+)*\]:?\s+.*https?:\/\//;
+const NUMBERED_SOURCE_LINE = /^\s{0,3}\d+[.)]\s+.*https?:\/\//;
 const ILLEGAL_FILENAME_CHARS = /[\\/:*?"<>|#^[\]\u0000-\u001f]/g;
 const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 
@@ -182,6 +186,8 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		// Citation definitions are looked up in the whole note, so a
 		// selection still gets the references it cites.
 		const definitions = this.collectReferenceDefinitions(fullText);
+		const sources = this.collectCitationSources(fullText);
+		const citationStats = { linked: new Set(), missing: new Set() };
 
 		const { results: aiResults, report: aiReport } = await this.getAiSuggestions(blocks);
 		this.assignTitles(blocks, aiResults, runStarted);
@@ -193,7 +199,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			const block = blocks[i];
 			const aiLinks = aiResults[i] ? aiResults[i].links : [];
 			try {
-				await this.createNote(block, aiLinks, definitions, sourceFile, destination);
+				await this.createNote(block, aiLinks, definitions, sources, citationStats, sourceFile, destination);
 				createdCount++;
 			} catch (err) {
 				console.error('Atomic notes: failed to create note', block.title, err);
@@ -202,7 +208,9 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 
 		let summary = `Atomic notes: created ${createdCount} note(s) in "${destination.folder}".`;
 		if (this.settings.showAiStatus) summary += `\n${this.describeAiReport(aiReport)}`;
-		new Notice(summary, this.settings.showAiStatus ? 12000 : undefined);
+		const citationLine = this.describeCitations(citationStats);
+		if (citationLine) summary += `\n${citationLine}`;
+		new Notice(summary, this.settings.showAiStatus || citationLine ? 15000 : undefined);
 	}
 
 	chooseDestination(defaultKey) {
@@ -251,7 +259,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 				inFootnote = true;
 				continue;
 			}
-			if (REF_DEF_REGEX.test(line)) continue;
+			if (REF_DEF_REGEX.test(line) || BRACKET_SOURCE_LINE.test(line)) continue;
 
 			if (trimmed === FORCE_TERMINATOR) {
 				close();
@@ -290,7 +298,13 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 
 		return rawBlocks
 			.map((b) => ({ title: b.title, body: this.trimBlankLines(b.lines).join('\n') }))
-			.filter((b) => b.body.length > 0);
+			.filter((b) => b.body.length > 0 && !this.isSourceList(b.body));
+	}
+
+	/** True when a block holds nothing but a citation source list. */
+	isSourceList(body) {
+		const lines = body.split('\n').filter((l) => l.trim() !== '');
+		return lines.length > 0 && lines.every((l) => NUMBERED_SOURCE_LINE.test(l) || BRACKET_SOURCE_LINE.test(l));
 	}
 
 	stripFrontmatter(lines) {
@@ -392,7 +406,13 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		return candidate;
 	}
 
-	async createNote(block, aiLinks, definitions, sourceFile, destination) {
+	async createNote(block, aiLinks, definitions, sources, citationStats, sourceFile, destination) {
+		// Numbered citations become Obsidian footnotes linked to their sources.
+		const citations = this.linkCitations(block.body, sources);
+		citations.linked.forEach((n) => citationStats.linked.add(n));
+		citations.missing.forEach((n) => citationStats.missing.add(n));
+		const body = citations.body;
+
 		const safeTitle = this.sanitizeFilename(block.title) || this.formatTimestamp(new Date());
 		const path = await this.getUniquePath(destination.folder, safeTitle);
 		const updated = new Date().toISOString().slice(0, 10);
@@ -424,26 +444,28 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 						Status: 'draft',
 						Sources: sourceLink,
 						Links: [],
-						Note_Summary: block.body,
+						Note_Summary: body,
 						updated: updated
 				  };
 
 		const yaml = stringifyYaml(frontmatter);
-		let noteContent = `---\n${yaml}---\n\n${block.body}\n`;
+		let noteContent = `---\n${yaml}---\n\n${body}\n`;
 
-		const cited = this.findCitedDefinitions(block.body, definitions);
+		// Other (non-numbered) reference-link and footnote definitions.
+		const cited = this.findCitedDefinitions(body, definitions);
 		if (cited.length > 0) {
 			noteContent += `\n${cited.join('\n')}\n`;
-		}
-
-		const references = this.collectReferences(block.body, definitions);
-		if (references.length > 0) {
-			noteContent += `\n## References\n\n${references.join('\n')}\n`;
 		}
 
 		const links = this.collectLinks(block, aiLinks);
 		if (links.length > 0) {
 			noteContent += `\n## See Also\n\n${links.map((l) => `- [[${l}]]`).join('\n')}\n`;
+		}
+
+		// Footnote definitions go last; Obsidian shows them as a numbered
+		// source list at the bottom of the note.
+		if (citations.footnotes.length > 0) {
+			noteContent += `\n${citations.footnotes.join('\n')}\n`;
 		}
 
 		await this.app.vault.create(path, noteContent);
@@ -502,6 +524,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		let m;
 		while ((m = re.exec(body)) !== null) {
 			if (m[1]) continue; // part of a [[wiki link]]
+			if (CITATION_LABEL.test(m[3].trim())) continue; // numbered citations: see linkCitations
 			const key = `${m[2] ? 'fn' : 'ref'}:${m[3].trim().toLowerCase()}`;
 			if (seen.has(key) || !definitions.has(key)) continue;
 			seen.add(key);
@@ -511,40 +534,116 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 	}
 
 	/**
-	 * Visible list of the sources this block cites, so each citation number
-	 * can be matched to its source. Covers inline citation links
-	 * ("[2](https://…)") and reference-style citations ("[2]" with a
-	 * "[2]: https://…" definition). Footnotes are left out: their
-	 * definitions are already copied into the note and shown by Obsidian.
+	 * Finds the source behind every citation number in the note. Accepts
+	 * the common layouts of AI and web exports:
+	 *   [1]: https://…  "Title"      reference-link definition
+	 *   [^1]: Title https://…        footnote definition
+	 *   [1] Title https://…          bracketed list line (optionally "- [1] …")
+	 *   1. [Title](https://…)        numbered list line containing a link
+	 * Returns a Map from the number ("1", "1_2") to { url, title, text }.
 	 */
-	collectReferences(body, definitions) {
-		const refs = [];
-		const seen = new Set();
-		const add = (label, url, title) => {
-			const key = `${label}|${url}`;
-			if (seen.has(key)) return;
-			seen.add(key);
-			refs.push(`- [${label}] ${title ? `[${title.replace(/[[\]]/g, '')}](${url})` : url}`);
-		};
+	collectCitationSources(text) {
+		const sources = new Map();
+		let inFence = false;
+		const lines = text.split(/\r?\n/);
 
-		const citationLabel = /^\d+(?:[_.-]\d+)*$/;
-		const re = /(\[)?\[([^\[\]\n]+)\](?:\(\s*<?([^()\s>]+)>?(?:\s+["'(]([^"')]*)["')])?\s*\))?/g;
-		let m;
-		while ((m = re.exec(body)) !== null) {
-			if (m[1]) continue; // part of a [[wiki link]]
-			const label = m[2].trim();
-			if (!citationLabel.test(label)) continue;
-			if (m[3]) {
-				add(label, m[3], m[4]);
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i];
+			if (FENCE_REGEX.test(line)) {
+				inFence = !inFence;
 				continue;
 			}
-			const def = definitions.get(`ref:${label.toLowerCase()}`);
-			if (def) {
-				const parts = def[0].match(/^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s+["'(]([^"')]*)["')])?\s*$/);
-				if (parts) add(label, parts[1], parts[2]);
+			if (inFence) continue;
+
+			const m =
+				line.match(/^\s{0,3}(?:[-*+]\s+)?\[\^?(\d+(?:[_.-]\d+)*)\]:?\s*(.+)$/) ||
+				line.match(/^\s{0,3}(\d+)[.)]\s+(.*https?:\/\/.*)$/);
+			if (!m || sources.has(m[1])) continue;
+
+			// Footnote definitions may continue on indented lines.
+			let rest = m[2].trim();
+			while (i + 1 < lines.length && INDENTED_CONTINUATION.test(lines[i + 1]) && /^\s{0,3}\[\^/.test(line)) {
+				rest += ` ${lines[++i].trim()}`;
 			}
+
+			const source = this.parseSourceText(rest);
+			if (source) sources.set(m[1], source);
 		}
-		return refs;
+		return sources;
+	}
+
+	/** Pulls { url, title, text } out of a source line; null if it has no source. */
+	parseSourceText(rest) {
+		const mdLink = rest.match(/\[([^\]]*)\]\(\s*<?(https?:\/\/[^()\s>]+)>?[^)]*\)/);
+		if (mdLink) return { url: mdLink[2], title: mdLink[1].trim(), text: rest };
+		const angle = rest.match(/^<(https?:\/\/[^>\s]+)>(?:\s+["'(]([^"')]*)["')])?/);
+		if (angle) return { url: angle[1], title: (angle[2] || '').trim(), text: rest };
+		const bare = rest.match(/https?:\/\/[^\s<>)\]]+/);
+		if (bare) {
+			const quoted = rest.match(/["“(]([^"”)]+)["”)]\s*$/);
+			const before = rest.slice(0, bare.index).replace(/[\s:–—-]+$/, '').trim();
+			return { url: bare[0].replace(/[.,;]+$/, ''), title: (quoted ? quoted[1] : before).trim(), text: rest };
+		}
+		// A footnote with text but no URL still counts as a source.
+		return rest.length > 0 ? { url: '', title: '', text: rest } : null;
+	}
+
+	/**
+	 * Rewrites numbered citations in a block as footnotes: "[1][6]",
+	 * "[1]" or "[1](https://…)" become "[^1][^6]" and each gets a
+	 * "[^1]: Title – URL" definition. Numbers with no known source are left
+	 * as written and reported as missing.
+	 */
+	linkCitations(body, sources) {
+		const used = new Map();
+		const missing = new Set();
+		const re = /(\[)?\[(\^?)(\d+(?:[_.-]\d+)*)\](\(\s*<?(https?:\/\/[^()\s>]+)>?(?:\s+["'(]([^"')]*)["')])?\s*\))?/g;
+
+		const lines = body.split('\n');
+		let inFence = false;
+		const out = lines.map((line) => {
+			if (FENCE_REGEX.test(line)) {
+				inFence = !inFence;
+				return line;
+			}
+			if (inFence) return line;
+			return line.replace(re, (whole, wikiOpen, caret, num, inline, inlineUrl, inlineTitle) => {
+				if (wikiOpen) return whole; // part of a [[wiki link]]
+				const source = inline ? { url: inlineUrl, title: (inlineTitle || '').trim(), text: '' } : sources.get(num);
+				if (!source) {
+					missing.add(num);
+					return whole;
+				}
+				if (!used.has(num)) used.set(num, source);
+				return `[^${num}]`;
+			});
+		});
+
+		const footnotes = Array.from(used.entries()).map(([num, src]) => {
+			let text;
+			if (src.url && src.title) text = `[${src.title.replace(/[[\]]/g, '')}](${src.url})`;
+			else if (src.url) text = src.url;
+			else text = src.text;
+			return `[^${num}]: ${text}`;
+		});
+
+		return { body: out.join('\n'), footnotes, linked: Array.from(used.keys()), missing: Array.from(missing) };
+	}
+
+	/** End-of-run line about citations, or '' when the notes had none. */
+	describeCitations(stats) {
+		const sortNums = (set) => Array.from(set).sort((a, b) => parseFloat(a) - parseFloat(b));
+		const missing = sortNums(stats.missing).filter((n) => !stats.linked.has(n));
+		if (!stats.linked.size && !missing.length) return '';
+		const parts = [];
+		if (stats.linked.size) parts.push(`Citations: ${stats.linked.size} linked to their sources.`);
+		if (missing.length) {
+			const shown = missing.slice(0, 8).map((n) => `[${n}]`).join(' ');
+			parts.push(
+				`${missing.length} citation number(s) (${shown}${missing.length > 8 ? ' …' : ''}) have no source list in the note, so they were left as plain text.`
+			);
+		}
+		return parts.join(' ');
 	}
 
 	/**
