@@ -412,6 +412,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		citations.linked.forEach((n) => citationStats.linked.add(n));
 		citations.missing.forEach((n) => citationStats.missing.add(n));
 		const body = citations.body;
+		block = Object.assign({}, block, { body });
 
 		const safeTitle = this.sanitizeFilename(block.title) || this.formatTimestamp(new Date());
 		const path = await this.getUniquePath(destination.folder, safeTitle);
@@ -540,7 +541,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 	 *   [^1]: Title https://…        footnote definition
 	 *   [1] Title https://…          bracketed list line (optionally "- [1] …")
 	 *   1. [Title](https://…)        numbered list line containing a link
-	 * Returns a Map from the number ("1", "1_2") to { url, title, text }.
+	 * Returns a Map from the number ("1", "1_2") to { display }.
 	 */
 	collectCitationSources(text) {
 		const sources = new Map();
@@ -572,20 +573,48 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		return sources;
 	}
 
-	/** Pulls { url, title, text } out of a source line; null if it has no source. */
+	/**
+	 * Turns a source line into the footnote text: the full citation as
+	 * written, followed by its URL, e.g.
+	 *   "Is Rye Flour the Same as Wholemeal Flour? – HomeDiningKitchen – [https://…](https://…)"
+	 * so a scholarly reference keeps its authors, journal and year.
+	 * Returns { display } or null if the line holds nothing.
+	 */
 	parseSourceText(rest) {
-		const mdLink = rest.match(/\[([^\]]*)\]\(\s*<?(https?:\/\/[^()\s>]+)>?[^)]*\)/);
-		if (mdLink) return { url: mdLink[2], title: mdLink[1].trim(), text: rest };
-		const angle = rest.match(/^<(https?:\/\/[^>\s]+)>(?:\s+["'(]([^"')]*)["')])?/);
-		if (angle) return { url: angle[1], title: (angle[2] || '').trim(), text: rest };
-		const bare = rest.match(/https?:\/\/[^\s<>)\]]+/);
-		if (bare) {
-			const quoted = rest.match(/["“(]([^"”)]+)["”)]\s*$/);
-			const before = rest.slice(0, bare.index).replace(/[\s:–—-]+$/, '').trim();
-			return { url: bare[0].replace(/[.,;]+$/, ''), title: (quoted ? quoted[1] : before).trim(), text: rest };
-		}
-		// A footnote with text but no URL still counts as a source.
-		return rest.length > 0 ? { url: '', title: '', text: rest } : null;
+		rest = rest.trim();
+		if (!rest) return null;
+
+		// "https://… "Title"" (reference-link definition) or a bare URL.
+		const urlFirst = rest.match(/^<?(https?:\/\/[^\s<>]+?)>?(?:\s+["'(](.*)["')])?\s*$/);
+		if (urlFirst) return { display: this.formatSource(urlFirst[2] || '', urlFirst[1]) };
+
+		// Markdown links "[Title](url)" become "Title – url".
+		const links = [];
+		let text = rest.replace(/\[([^\]]*)\]\(\s*<?(https?:\/\/[^()\s>]+)>?[^)]*\)/g, (m, title, url) => {
+			links.push(this.formatSource(title, url));
+			return `${links.length - 1}`;
+		});
+		// Bare or <angle> URLs, with any ":" or "-" separator before them.
+		text = text.replace(/(\S?)\s*[:\-–—]?\s*<?(https?:\/\/[^\s<>]+?)>?(?=[.,;]?(?:\s|$))/g, (m, prev, url) =>
+			`${prev}${prev ? (/[.;,]/.test(prev) ? ' ' : ' – ') : ''}${this.linkUrl(url)}`
+		);
+		// "doi:10.xxxx/yyy" becomes a clickable DOI link.
+		text = text.replace(/(^|[\s(])doi:\s*(10\.\d{4,9}\/[^\s<>]+?)(?=[.,;]?(?:\s|$))/gi, (m, pre, doi) =>
+			`${pre}[doi:${doi}](https://doi.org/${doi})`
+		);
+		text = text.replace(/(\d+)/g, (m, i) => links[Number(i)]);
+		return { display: text.replace(/\s{2,}/g, ' ').trim() };
+	}
+
+	formatSource(title, url) {
+		const t = (title || '').replace(/[[\]]/g, '').trim();
+		return t && t !== url ? `${t} – ${this.linkUrl(url)}` : this.linkUrl(url);
+	}
+
+	/** A clickable link that shows the URL itself. */
+	linkUrl(url) {
+		const clean = url.replace(/[.,;]+$/, '');
+		return `[${clean}](${clean.replace(/ /g, '%20').replace(/\(/g, '%28').replace(/\)/g, '%29')})`;
 	}
 
 	/**
@@ -609,7 +638,7 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			if (inFence) return line;
 			return line.replace(re, (whole, wikiOpen, caret, num, inline, inlineUrl, inlineTitle) => {
 				if (wikiOpen) return whole; // part of a [[wiki link]]
-				const source = inline ? { url: inlineUrl, title: (inlineTitle || '').trim(), text: '' } : sources.get(num);
+				const source = inline ? { display: this.formatSource(inlineTitle, inlineUrl) } : sources.get(num);
 				if (!source) {
 					missing.add(num);
 					return whole;
@@ -619,13 +648,13 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			});
 		});
 
-		const footnotes = Array.from(used.entries()).map(([num, src]) => {
-			let text;
-			if (src.url && src.title) text = `[${src.title.replace(/[[\]]/g, '')}](${src.url})`;
-			else if (src.url) text = src.url;
-			else text = src.text;
-			return `[^${num}]: ${text}`;
-		});
+		const footnotes = Array.from(used.entries()).map(([num, src]) => `[^${num}]: ${src.display}`);
+
+		// A numbered source list at the end of the block is shown as footnotes
+		// instead, so drop it from the text.
+		if (used.size > 0) {
+			while (out.length && (out[out.length - 1].trim() === '' || NUMBERED_SOURCE_LINE.test(out[out.length - 1]))) out.pop();
+		}
 
 		return { body: out.join('\n'), footnotes, linked: Array.from(used.keys()), missing: Array.from(missing) };
 	}
