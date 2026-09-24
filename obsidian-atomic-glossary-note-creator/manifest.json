@@ -1,7 +1,7 @@
 {
 	"id": "atomic-glossary-note-creator",
 	"name": "Atomic & Glossary Note Creator",
-	"version": "1.2.2",
+	"version": "1.2.3",
 	"minAppVersion": "1.4.0",
 	"description": "Extract headed or #newatomicnote-tagged blocks from the active note into self-contained atomic or glossary notes, with See Also links and optional AI enhancement (Gemini, Claude or OpenAI).",
 	"author": "",

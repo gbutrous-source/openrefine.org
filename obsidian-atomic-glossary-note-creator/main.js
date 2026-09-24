@@ -595,9 +595,11 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			return `${links.length - 1}`;
 		});
 		// Bare or <angle> URLs, with any ":" or "-" separator before them.
-		text = text.replace(/(\S?)\s*[:\-–—]?\s*<?(https?:\/\/[^\s<>]+?)>?(?=[.,;]?(?:\s|$))/g, (m, prev, url) =>
-			`${prev}${prev ? (/[.;,]/.test(prev) ? ' ' : ' – ') : ''}${this.linkUrl(url)}`
-		);
+		text = text.replace(/(\S?)\s*([:\-–—]?)\s*<?(https?:\/\/[^\s<>]+?)>?(?=[.,;]?(?:\s|$))/g, (m, prev, sep, url) => {
+			let join = '';
+			if (prev) join = sep === ':' ? ': ' : /[.;,]/.test(prev) ? ' ' : ' – ';
+			return `${prev}${join}${this.linkUrl(url)}`;
+		});
 		// "doi:10.xxxx/yyy" becomes a clickable DOI link.
 		text = text.replace(/(^|[\s(])doi:\s*(10\.\d{4,9}\/[^\s<>]+?)(?=[.,;]?(?:\s|$))/gi, (m, pre, doi) =>
 			`${pre}[doi:${doi}](https://doi.org/${doi})`
@@ -626,7 +628,8 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 	linkCitations(body, sources) {
 		const used = new Map();
 		const missing = new Set();
-		const re = /(\[)?\[(\^?)(\d+(?:[_.-]\d+)*)\](\(\s*<?(https?:\/\/[^()\s>]+)>?(?:\s+["'(]([^"')]*)["')])?\s*\))?/g;
+		// A single number ("[1]", "[1_2]") or a group ("[1,2]", "[1–3]", "[1, 3-5]").
+		const re = /(\[)?\[(\^?)(\d+(?:\s*[,_.–—-]\s*\d+)*)\](\(\s*<?(https?:\/\/[^()\s>]+)>?(?:\s+["'(]([^"')]*)["')])?\s*\))?/g;
 
 		const lines = body.split('\n');
 		let inFence = false;
@@ -638,13 +641,27 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 			if (inFence) return line;
 			return line.replace(re, (whole, wikiOpen, caret, num, inline, inlineUrl, inlineTitle) => {
 				if (wikiOpen) return whole; // part of a [[wiki link]]
-				const source = inline ? { display: this.formatSource(inlineTitle, inlineUrl) } : sources.get(num);
-				if (!source) {
-					missing.add(num);
+				if (inline) {
+					if (!used.has(num)) used.set(num, { display: this.formatSource(inlineTitle, inlineUrl) });
+					return `[^${num}]`;
+				}
+				const numbers = sources.has(num) ? [num] : this.expandCitationGroup(num);
+				if (!numbers.some((n) => sources.has(n))) {
+					numbers.forEach((n) => missing.add(n));
 					return whole;
 				}
-				if (!used.has(num)) used.set(num, source);
-				return `[^${num}]`;
+				// "[1,2]" becomes "[^1][^2]"; a number without a source stays as "[n]".
+				return numbers
+					.map((n) => {
+						const source = sources.get(n);
+						if (!source) {
+							missing.add(n);
+							return `[${n}]`;
+						}
+						if (!used.has(n)) used.set(n, source);
+						return `[^${n}]`;
+					})
+					.join('');
 			});
 		});
 
@@ -657,6 +674,22 @@ module.exports = class AtomicGlossaryNotePlugin extends Plugin {
 		}
 
 		return { body: out.join('\n'), footnotes, linked: Array.from(used.keys()), missing: Array.from(missing) };
+	}
+
+	/** "1, 3-5" -> ["1", "3", "4", "5"]; a label such as "1_2" stays whole. */
+	expandCitationGroup(label) {
+		const numbers = [];
+		for (const part of label.split(/\s*,\s*/)) {
+			const range = part.match(/^(\d+)\s*[–—-]\s*(\d+)$/);
+			const from = range && Number(range[1]);
+			const to = range && Number(range[2]);
+			if (range && to > from && to - from <= 50) {
+				for (let n = from; n <= to; n++) numbers.push(String(n));
+			} else {
+				numbers.push(part.replace(/\s+/g, ''));
+			}
+		}
+		return numbers;
 	}
 
 	/** End-of-run line about citations, or '' when the notes had none. */
